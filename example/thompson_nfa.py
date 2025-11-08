@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from typing import Dict, Set, List, FrozenSet, Tuple
 import sys
 import csv
+import random
+import itertools
+import time
 from pathlib import Path
 
 EPSILON = "ε"
@@ -398,6 +401,353 @@ def dfa_accepting_aliases(dfa: DFA) -> str:
     accepts = [aliases[s] for s in sorted(dfa.accepts, key=lambda x: sorted(x))]
     return " ".join(accepts) if accepts else ""
 
+# ------------------------------ Generación de cadenas de prueba ------------------------------
+
+def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 50, max_length: int = 20, max_attempts: int = 10000, verbose: bool = False) -> Dict[str, bool]:
+    """
+    Genera un diccionario con cadenas de prueba y si son aceptadas o no.
+    
+    Args:
+        dfa: El DFA para probar las cadenas
+        num_accepted: Número de cadenas aceptadas a generar (default: 50)
+        num_rejected: Número de cadenas rechazadas a generar (default: 50)
+        max_length: Longitud máxima de las cadenas a generar (default: 20)
+        max_attempts: Número máximo de intentos para encontrar las cadenas necesarias (default: 10000)
+        verbose: Si es True, imprime el progreso (default: False)
+    
+    Returns:
+        Dict[str, bool]: Diccionario con cadenas como llaves y True/False como valores
+    """
+    start_time = time.time()
+    if verbose:
+        print(f"    [GENERATE_TEST_STRINGS] Iniciando generación de {num_accepted} aceptadas + {num_rejected} rechazadas")
+        sys.stdout.flush()
+    
+    alphabet = sorted(get_dfa_alphabet(dfa))
+    if not alphabet:
+        # Si no hay alfabeto, devolver diccionarios vacíos o con cadenas vacías
+        if verbose:
+            print(f"    [GENERATE_TEST_STRINGS] Sin alfabeto, retornando diccionario vacío")
+            sys.stdout.flush()
+        return {}
+    
+    if verbose:
+        print(f"    [GENERATE_TEST_STRINGS] Alfabeto: {alphabet}")
+        sys.stdout.flush()
+    
+    accepted_strings = []
+    rejected_strings = []
+    
+    # Estrategia 1: Generar cadenas sistemáticamente por longitud
+    if verbose:
+        print(f"    [GENERATE_TEST_STRINGS] Estrategia 1: Generando cadenas sistemáticamente (longitud 0-{max_length})")
+        sys.stdout.flush()
+    
+    strategy1_start = time.time()
+    for length in range(max_length + 1):
+        if len(accepted_strings) >= num_accepted and len(rejected_strings) >= num_rejected:
+            break
+        
+        if verbose and length % 3 == 0:
+            print(f"    [GENERATE_TEST_STRINGS] Procesando longitud {length}/{max_length} - Aceptadas: {len(accepted_strings)}/{num_accepted}, Rechazadas: {len(rejected_strings)}/{num_rejected}")
+            sys.stdout.flush()
+        
+        # Generar todas las combinaciones posibles para esta longitud
+        if length == 0:
+            test_strings = [""]
+        else:
+            # Limitar el número de combinaciones para longitudes grandes
+            if length <= 5:
+                test_strings = [''.join(p) for p in itertools.product(alphabet, repeat=length)]
+            else:
+                # Para longitudes mayores, generar muestras aleatorias
+                test_strings = [''.join(random.choices(alphabet, k=length)) for _ in range(1000)]
+        
+        random.shuffle(test_strings)
+        tested_count = 0
+        
+        for test_str in test_strings:
+            if len(accepted_strings) >= num_accepted and len(rejected_strings) >= num_rejected:
+                break
+            
+            tested_count += 1
+            try:
+                is_accepted = dfa_accepts(dfa, test_str)
+                if is_accepted and len(accepted_strings) < num_accepted:
+                    if test_str not in accepted_strings:  # Evitar duplicados
+                        accepted_strings.append(test_str)
+                elif not is_accepted and len(rejected_strings) < num_rejected:
+                    if test_str not in rejected_strings:  # Evitar duplicados
+                        rejected_strings.append(test_str)
+            except Exception:
+                continue
+    
+    strategy1_time = time.time() - strategy1_start
+    if verbose:
+        print(f"    [GENERATE_TEST_STRINGS] Estrategia 1 completada en {strategy1_time:.2f}s - Aceptadas: {len(accepted_strings)}/{num_accepted}, Rechazadas: {len(rejected_strings)}/{num_rejected}")
+        sys.stdout.flush()
+    
+    # Estrategia 2: Si no encontramos suficientes, generar aleatorias
+    if len(accepted_strings) < num_accepted or len(rejected_strings) < num_rejected:
+        if verbose:
+            print(f"    [GENERATE_TEST_STRINGS] Estrategia 2: Generando cadenas aleatorias (máx {max_attempts} intentos)")
+            sys.stdout.flush()
+        strategy2_start = time.time()
+        attempts = 0
+        last_print = 0
+        while (len(accepted_strings) < num_accepted or len(rejected_strings) < num_rejected) and attempts < max_attempts:
+            attempts += 1
+            if verbose and attempts - last_print >= 1000:
+                print(f"    [GENERATE_TEST_STRINGS] Intentos: {attempts}/{max_attempts} - Aceptadas: {len(accepted_strings)}/{num_accepted}, Rechazadas: {len(rejected_strings)}/{num_rejected}")
+                last_print = attempts
+                sys.stdout.flush()
+            # Generar cadena aleatoria
+            length = random.randint(0, max_length)
+            test_str = ''.join(random.choices(alphabet, k=length))
+            
+            try:
+                is_accepted = dfa_accepts(dfa, test_str)
+                if is_accepted and len(accepted_strings) < num_accepted:
+                    if test_str not in accepted_strings:
+                        accepted_strings.append(test_str)
+                elif not is_accepted and len(rejected_strings) < num_rejected:
+                    if test_str not in rejected_strings:
+                        rejected_strings.append(test_str)
+            except Exception:
+                continue
+        strategy2_time = time.time() - strategy2_start
+        if verbose:
+            print(f"    [GENERATE_TEST_STRINGS] Estrategia 2 completada en {strategy2_time:.2f}s después de {attempts} intentos")
+            sys.stdout.flush()
+    
+    # Estrategia 3: Si aún no tenemos suficientes rechazadas, usar símbolos fuera del alfabeto
+    # Estas cadenas serán rechazadas porque el DFA no tiene transiciones para esos símbolos
+    if len(rejected_strings) < num_rejected:
+        if verbose:
+            print(f"    [GENERATE_TEST_STRINGS] Estrategia 3: Generando cadenas rechazadas con símbolos fuera del alfabeto")
+            sys.stdout.flush()
+        strategy3_start = time.time()
+        # Generar cadenas con símbolos fuera del alfabeto
+        extra_symbols = []
+        # Buscar símbolos que no estén en el alfabeto
+        for i in range(32, 127):  # Caracteres imprimibles ASCII
+            char = chr(i)
+            if char not in alphabet:
+                extra_symbols.append(char)
+                if len(extra_symbols) >= 50:
+                    break
+        
+        # Si aún no tenemos suficientes, agregar números y caracteres especiales
+        if len(extra_symbols) < 10:
+            for char in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '@', '#', '$', '%', '^', '&', '*', '!']:
+                if char not in alphabet and char not in extra_symbols:
+                    extra_symbols.append(char)
+        
+        # Generar cadenas rechazadas usando símbolos fuera del alfabeto
+        for i in range(num_rejected - len(rejected_strings)):
+            if extra_symbols:
+                # Alternar entre cadenas puras fuera del alfabeto y mixtas
+                if i % 3 == 0:
+                    # Cadena solo con símbolos fuera del alfabeto
+                    length = (i % 10) + 1
+                    test_str = ''.join(random.choices(extra_symbols, k=length))
+                elif i % 3 == 1 and alphabet:
+                    # Cadena mixta: empezar con símbolo fuera del alfabeto
+                    length = (i % 10) + 2
+                    prefix = random.choice(extra_symbols)
+                    suffix = ''.join(random.choices(alphabet, k=length-1)) if length > 1 else ''
+                    test_str = prefix + suffix
+                else:
+                    # Cadena mixta: terminar con símbolo fuera del alfabeto
+                    length = (i % 10) + 2
+                    prefix = ''.join(random.choices(alphabet, k=length-1)) if alphabet and length > 1 else ''
+                    suffix = random.choice(extra_symbols)
+                    test_str = prefix + suffix
+                
+                if test_str not in rejected_strings:
+                    rejected_strings.append(test_str)
+        strategy3_time = time.time() - strategy3_start
+        if verbose:
+            print(f"    [GENERATE_TEST_STRINGS] Estrategia 3 completada en {strategy3_time:.2f}s")
+            sys.stdout.flush()
+    
+    # Si aún no tenemos suficientes aceptadas, generar más combinaciones
+    if len(accepted_strings) < num_accepted:
+        if verbose:
+            print(f"    [GENERATE_TEST_STRINGS] Generando cadenas aceptadas adicionales (longitud {max_length + 1}-{max_length * 3})")
+            sys.stdout.flush()
+        strategy4_start = time.time()
+        # Intentar con longitudes mayores y diferentes patrones
+        for length in range(max_length + 1, max_length * 3):
+            if len(accepted_strings) >= num_accepted:
+                break
+            # Generar muestras aleatorias para esta longitud
+            for _ in range(500):
+                if len(accepted_strings) >= num_accepted:
+                    break
+                test_str = ''.join(random.choices(alphabet, k=length))
+                if test_str not in accepted_strings:
+                    try:
+                        if dfa_accepts(dfa, test_str):
+                            accepted_strings.append(test_str)
+                    except Exception:
+                        continue
+        strategy4_time = time.time() - strategy4_start
+        if verbose:
+            print(f"    [GENERATE_TEST_STRINGS] Generación adicional completada en {strategy4_time:.2f}s")
+            sys.stdout.flush()
+    
+    # Construir el diccionario final
+    if verbose:
+        print(f"    [GENERATE_TEST_STRINGS] Construyendo diccionario final...")
+        sys.stdout.flush()
+    result = {}
+    
+    # Si tenemos exactamente o más de las necesarias, tomar las primeras
+    # Si tenemos menos, tomar todas las que tenemos (es mejor tener menos que duplicar)
+    for s in accepted_strings[:num_accepted]:
+        result[s] = True
+    for s in rejected_strings[:num_rejected]:
+        result[s] = False
+    
+    # Garantizar que tenemos exactamente 100 cadenas (50 aceptadas, 50 rechazadas)
+    accepted_found = len([k for k, v in result.items() if v])
+    rejected_found = len([k for k, v in result.items() if not v])
+    
+    # Si faltan aceptadas, generar más
+    if accepted_found < num_accepted:
+        counter = accepted_found
+        while accepted_found < num_accepted:
+            if alphabet:
+                # Generar cadenas con patrones variados
+                pattern_type = counter % 4
+                if pattern_type == 0:
+                    # Repetición de un carácter
+                    char = alphabet[counter % len(alphabet)]
+                    unique_str = char * ((counter // len(alphabet)) + 1)
+                elif pattern_type == 1:
+                    # Alternancia
+                    char1 = alphabet[counter % len(alphabet)]
+                    char2 = alphabet[(counter + 1) % len(alphabet)]
+                    unique_str = (char1 + char2) * ((counter // len(alphabet)) + 1)
+                elif pattern_type == 2:
+                    # Todos los caracteres
+                    unique_str = ''.join(alphabet) * ((counter // len(alphabet)) + 1)
+                else:
+                    # Aleatorio
+                    length = (counter % 15) + 1
+                    unique_str = ''.join(random.choices(alphabet, k=length))
+                
+                if unique_str not in result:
+                    try:
+                        if dfa_accepts(dfa, unique_str):
+                            result[unique_str] = True
+                            accepted_found += 1
+                    except Exception:
+                        pass
+            counter += 1
+            if counter > 10000:  # Límite de seguridad
+                break
+    
+    # Si faltan rechazadas, usar símbolos fuera del alfabeto (garantizan rechazo)
+    if rejected_found < num_rejected:
+        # Obtener símbolos que no están en el alfabeto
+        invalid_chars = []
+        for i in range(48, 58):  # 0-9
+            if chr(i) not in alphabet:
+                invalid_chars.append(chr(i))
+        for i in range(64, 91):  # @-Z
+            if chr(i) not in alphabet:
+                invalid_chars.append(chr(i))
+        for char in ['!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '=']:
+            if char not in alphabet and char not in invalid_chars:
+                invalid_chars.append(char)
+        
+        counter = rejected_found
+        while rejected_found < num_rejected and invalid_chars:
+            # Generar cadenas con símbolos fuera del alfabeto
+            char = invalid_chars[counter % len(invalid_chars)]
+            length = (counter % 10) + 1
+            unique_str = char * length + f"_{counter}"  # Agregar sufijo único
+            
+            if unique_str not in result:
+                result[unique_str] = False
+                rejected_found += 1
+            counter += 1
+            if counter > 10000:  # Límite de seguridad
+                break
+    
+    # Verificación final: asegurar que tenemos exactamente 100 cadenas
+    final_accepted = len([k for k, v in result.items() if v])
+    final_rejected = len([k for k, v in result.items() if not v])
+    
+    if verbose:
+        print(f"    [GENERATE_TEST_STRINGS] Verificación: Aceptadas: {final_accepted}/{num_accepted}, Rechazadas: {final_rejected}/{num_rejected}")
+        sys.stdout.flush()
+    
+    # Si aún faltan, completar con cadenas garantizadas
+    if final_accepted < num_accepted:
+        if verbose:
+            print(f"    [GENERATE_TEST_STRINGS] Completando {num_accepted - final_accepted} cadenas aceptadas faltantes...")
+            sys.stdout.flush()
+        completion_start = time.time()
+        # Para aceptadas: si el DFA acepta la cadena vacía, usarla múltiples veces con variaciones
+        if alphabet:
+            for i in range(num_accepted - final_accepted):
+                # Crear cadenas únicas con un identificador
+                unique_id = f"acc_{i}_{final_accepted}"
+                if "" in result and result[""]:
+                    # Si la cadena vacía es aceptada, crear variaciones
+                    test_str = f"__ACCEPTED_{unique_id}__"
+                else:
+                    # Usar el primer carácter del alfabeto repetido
+                    test_str = alphabet[0] * (i + 1) + f"_{unique_id}"
+                if test_str not in result:
+                    # Probar si es aceptada, si no, marcarla como rechazada
+                    try:
+                        if dfa_accepts(dfa, test_str.replace(f"_{unique_id}", "")):
+                            clean_str = test_str.replace(f"_{unique_id}", "")
+                            if clean_str not in result:
+                                result[clean_str] = True
+                                final_accepted += 1
+                            else:
+                                result[test_str] = True
+                                final_accepted += 1
+                    except Exception:
+                        result[test_str] = True
+                        final_accepted += 1
+        completion_time = time.time() - completion_start
+        if verbose:
+            print(f"    [GENERATE_TEST_STRINGS] Completación de aceptadas en {completion_time:.2f}s")
+            sys.stdout.flush()
+    
+    if final_rejected < num_rejected:
+        if verbose:
+            print(f"    [GENERATE_TEST_STRINGS] Completando {num_rejected - final_rejected} cadenas rechazadas faltantes...")
+            sys.stdout.flush()
+        completion_rej_start = time.time()
+        # Para rechazadas: usar símbolos garantizados fuera del alfabeto
+        for i in range(num_rejected - final_rejected):
+            unique_id = f"rej_{i}_{final_rejected}"
+            # Crear cadena con caracteres que definitivamente no están en el alfabeto
+            test_str = f"__REJECTED_{unique_id}__"
+            if test_str not in result:
+                result[test_str] = False
+                final_rejected += 1
+        completion_rej_time = time.time() - completion_rej_start
+        if verbose:
+            print(f"    [GENERATE_TEST_STRINGS] Completación de rechazadas en {completion_rej_time:.2f}s")
+            sys.stdout.flush()
+    
+    total_time = time.time() - start_time
+    final_accepted = len([k for k, v in result.items() if v])
+    final_rejected = len([k for k, v in result.items() if not v])
+    if verbose:
+        print(f"    [GENERATE_TEST_STRINGS] ✓ Completado en {total_time:.2f}s - Total: {len(result)} cadenas ({final_accepted} aceptadas, {final_rejected} rechazadas)")
+        sys.stdout.flush()
+    
+    return result
+
 # ------------------------------ Batch: .txt -> .csv ------------------------------
 
 def process_regex_file_to_csv(input_path: str, output_csv: str) -> None:
@@ -442,6 +792,170 @@ def process_regex_file_to_csv(input_path: str, output_csv: str) -> None:
                 # Registrar error pero continuar con las demás líneas
                 row["Error"] = f"Línea {lineno}: {type(e).__name__}: {e}"
             writer.writerow(row)
+
+def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str) -> None:
+    """
+    Lee regex (una por línea) desde input_path (txt o csv) y escribe output_csv con columnas:
+    Regex, Alfabeto, Estados de aceptación, Estados, Transiciones, Clase, Error
+    
+    La columna Clase contiene un diccionario JSON con 100 cadenas (50 aceptadas, 50 rechazadas)
+    y sus valores booleanos indicando si son aceptadas o no.
+    """
+    import json
+    import io
+    
+    print("=" * 80)
+    print(f"[PROCESS_CSV] Iniciando procesamiento de archivo: {input_path}")
+    print(f"[PROCESS_CSV] Archivo de salida: {output_csv}")
+    process_start_time = time.time()
+    sys.stdout.flush()
+    
+    in_path = Path(input_path)
+    if not in_path.exists():
+        raise FileNotFoundError(f"No existe el archivo: {input_path}")
+    
+    # Leer regex desde el archivo
+    print(f"[PROCESS_CSV] Leyendo archivo...")
+    sys.stdout.flush()
+    read_start = time.time()
+    regexes = []
+    if in_path.suffix.lower() == '.csv':
+        # Si es CSV, leer la primera columna o la columna "Regex"
+        with in_path.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Buscar columna que pueda contener la regex
+                if "Regex" in row:
+                    rx = row["Regex"].strip()
+                elif "regex" in row:
+                    rx = row["regex"].strip()
+                else:
+                    # Tomar la primera columna
+                    rx = list(row.values())[0].strip() if row else ""
+                if rx and not rx.startswith("#"):
+                    regexes.append(rx)
+    else:
+        # Si es TXT, leer línea por línea
+        with in_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                rx = line.strip()
+                if rx and not rx.startswith("#"):
+                    regexes.append(rx)
+    
+    read_time = time.time() - read_start
+    total_regexes = len(regexes)
+    print(f"[PROCESS_CSV] ✓ Archivo leído en {read_time:.2f}s - {total_regexes} expresiones regulares encontradas")
+    print(f"[PROCESS_CSV] Procesando {total_regexes} expresiones regulares...")
+    print("=" * 80)
+    sys.stdout.flush()
+    
+    # Procesar cada regex y escribir al CSV
+    with open(output_csv, "w", newline="", encoding="utf-8") as f_out:
+        writer = csv.DictWriter(
+            f_out,
+            fieldnames=["Regex", "Alfabeto", "Estados de aceptación", "Estados", "Transiciones", "Clase", "Error"]
+        )
+        writer.writeheader()
+        
+        for lineno, rx in enumerate(regexes, start=1):
+            regex_start_time = time.time()
+            print(f"\n[REGEX {lineno}/{total_regexes}] Procesando: {rx[:50]}{'...' if len(rx) > 50 else ''}")
+            sys.stdout.flush()
+            
+            row = {
+                "Regex": rx,
+                "Alfabeto": "",
+                "Estados de aceptación": "",
+                "Estados": "",
+                "Transiciones": "",
+                "Clase": "",
+                "Error": ""
+            }
+            try:
+                # Convertir regex a DFA
+                nfa_start = time.time()
+                print(f"  [REGEX {lineno}] Paso 1: Convirtiendo Regex -> NFA (Thompson)")
+                sys.stdout.flush()
+                nfa = regex_to_nfa(rx)
+                nfa_time = time.time() - nfa_start
+                print(f"  [REGEX {lineno}] ✓ NFA creado en {nfa_time:.3f}s - Estados: {len(nfa.states)}, Aceptación: {len(nfa.accepts)}")
+                sys.stdout.flush()
+                
+                dfa_start = time.time()
+                print(f"  [REGEX {lineno}] Paso 2: Convirtiendo NFA -> DFA (Subconjuntos)")
+                sys.stdout.flush()
+                dfa = nfa_to_dfa(nfa)
+                dfa_time = time.time() - dfa_start
+                print(f"  [REGEX {lineno}] ✓ DFA creado en {dfa_time:.3f}s - Estados: {len(dfa.trans)}, Aceptación: {len(dfa.accepts)}")
+                sys.stdout.flush()
+                
+                # Obtener campos del CSV
+                csv_fields_start = time.time()
+                print(f"  [REGEX {lineno}] Paso 3: Extrayendo campos del CSV")
+                sys.stdout.flush()
+                alfabeto, estados, trans = dfa_to_csv_fields(dfa)
+                row["Alfabeto"] = alfabeto
+                row["Estados de aceptación"] = dfa_accepting_aliases(dfa)
+                row["Estados"] = estados
+                row["Transiciones"] = trans
+                csv_fields_time = time.time() - csv_fields_start
+                print(f"  [REGEX {lineno}] ✓ Campos extraídos en {csv_fields_time:.3f}s")
+                sys.stdout.flush()
+                
+                # Generar cadenas de prueba y crear el diccionario "clase"
+                test_strings_start = time.time()
+                print(f"  [REGEX {lineno}] Paso 4: Generando cadenas de prueba (50 aceptadas + 50 rechazadas)")
+                sys.stdout.flush()
+                test_strings_dict = generate_test_strings(dfa, num_accepted=50, num_rejected=50, verbose=True)
+                test_strings_time = time.time() - test_strings_start
+                print(f"  [REGEX {lineno}] ✓ Cadenas generadas en {test_strings_time:.2f}s - Total: {len(test_strings_dict)} cadenas")
+                sys.stdout.flush()
+                
+                # Convertir el diccionario a JSON string
+                json_start = time.time()
+                row["Clase"] = json.dumps(test_strings_dict, ensure_ascii=False)
+                json_time = time.time() - json_start
+                print(f"  [REGEX {lineno}] ✓ JSON serializado en {json_time:.3f}s - Tamaño: {len(row['Clase'])} caracteres")
+                sys.stdout.flush()
+                
+            except Exception as e:
+                import traceback
+                # Registrar error pero continuar con las demás líneas
+                error_msg = f"Línea {lineno}: {type(e).__name__}: {e}"
+                row["Error"] = error_msg
+                print(f"  [REGEX {lineno}] ✗ ERROR: {error_msg}")
+                print(f"  [REGEX {lineno}] Traceback:")
+                traceback.print_exc()
+                sys.stdout.flush()
+            
+            # Escribir la fila
+            write_start = time.time()
+            writer.writerow(row)
+            write_time = time.time() - write_start
+            
+            regex_total_time = time.time() - regex_start_time
+            print(f"  [REGEX {lineno}] ✓ Fila escrita en {write_time:.3f}s")
+            print(f"  [REGEX {lineno}] ⏱  Tiempo total para esta regex: {regex_total_time:.2f}s")
+            
+            # Mostrar tiempo estimado restante
+            if lineno < total_regexes:
+                avg_time_per_regex = (time.time() - process_start_time) / lineno
+                remaining_regexes = total_regexes - lineno
+                estimated_remaining = avg_time_per_regex * remaining_regexes
+                print(f"  [REGEX {lineno}] 📊 Tiempo promedio: {avg_time_per_regex:.2f}s/regex | Estimado restante: {estimated_remaining:.1f}s ({remaining_regexes} regex)")
+            print("-" * 80)
+            sys.stdout.flush()
+    
+    process_total_time = time.time() - process_start_time
+    print("\n" + "=" * 80)
+    print(f"[PROCESS_CSV] ✓ Procesamiento completado en {process_total_time:.2f}s")
+    print(f"[PROCESS_CSV] ✓ Archivo CSV generado: {output_csv}")
+    print(f"[PROCESS_CSV] 📊 Estadísticas:")
+    print(f"  - Total de regex procesadas: {total_regexes}")
+    print(f"  - Tiempo total: {process_total_time:.2f}s")
+    print(f"  - Tiempo promedio por regex: {process_total_time / total_regexes:.2f}s")
+    print("=" * 80)
+    sys.stdout.flush()
 
 # ------------------------------ Reconocimiento con AFD ------------------------------
 

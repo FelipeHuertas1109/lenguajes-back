@@ -215,12 +215,176 @@ El nombre del archivo se genera automáticamente desde la expresión regular:
 - Formato: `dfa_<regex_sanitizada>.jff`
 - Ejemplo: `a*b` → `dfa_a_b.jff`
 
+### Endpoint: Procesar Archivo de Regex a CSV con Columna Clase
+
+**URL:** `/api/regex-file-to-csv/`
+
+**Métodos:** `POST`
+
+Este endpoint recibe un archivo de texto (`.txt`) o CSV (`.csv`) con expresiones regulares (una por línea) y genera un archivo CSV con toda la información del DFA más una columna adicional llamada "Clase" que contiene un diccionario JSON con 100 cadenas de prueba (50 aceptadas y 50 rechazadas) y sus valores booleanos.
+
+#### Uso
+
+**POST Request con curl:**
+```bash
+# Procesar archivo de texto
+curl -X POST http://localhost:8000/api/regex-file-to-csv/ \
+  -F "file=@regexes.txt" \
+  -o resultado.csv
+
+# Procesar archivo CSV
+curl -X POST http://localhost:8000/api/regex-file-to-csv/ \
+  -F "file=@regexes.csv" \
+  -o resultado.csv
+```
+
+**POST Request con Python (requests):**
+```python
+import requests
+
+url = "http://localhost:8000/api/regex-file-to-csv/"
+files = {'file': open('regexes.txt', 'rb')}
+response = requests.post(url, files=files)
+
+if response.status_code == 200:
+    with open('resultado.csv', 'wb') as f:
+        f.write(response.content)
+    print("CSV generado exitosamente")
+else:
+    print(f"Error: {response.json()}")
+```
+
+**POST Request con JavaScript (fetch):**
+```javascript
+const formData = new FormData();
+formData.append('file', fileInput.files[0]); // fileInput es un elemento <input type="file">
+
+fetch('http://localhost:8000/api/regex-file-to-csv/', {
+    method: 'POST',
+    body: formData
+})
+.then(response => response.blob())
+.then(blob => {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'resultado.csv';
+    a.click();
+});
+```
+
+#### Formato del archivo de entrada
+
+**Archivo de texto (`.txt`):**
+```
+a*b
+(a|b)*
+a+b
+a?b
+```
+
+**Archivo CSV (`.csv`):**
+```csv
+Regex
+a*b
+(a|b)*
+a+b
+a?b
+```
+
+O también puede tener otras columnas, pero se leerá la columna "Regex" o la primera columna:
+```csv
+Regex,Descripcion
+a*b,Zero or more a followed by b
+(a|b)*,Any combination of a and b
+```
+
+#### Formato del archivo de salida
+
+El CSV generado contiene las siguientes columnas:
+
+1. **Regex**: La expresión regular original
+2. **Alfabeto**: Los símbolos del alfabeto del DFA (separados por espacios)
+3. **Estados de aceptación**: Los estados de aceptación del DFA (separados por espacios)
+4. **Estados**: Todos los estados del DFA (separados por espacios)
+5. **Transiciones**: Las transiciones del DFA en formato `Sx --a--> Sy` (separadas por ` | `)
+6. **Clase**: Un diccionario JSON con 100 cadenas de prueba y sus valores booleanos
+7. **Error**: Mensaje de error si hubo algún problema al procesar la regex (vacío si fue exitoso)
+
+#### Ejemplo de archivo CSV de salida
+
+```csv
+Regex,Alfabeto,Estados de aceptación,Estados,Transiciones,Clase,Error
+a*b,"a b","S2","S0 S1 S2","S0 --a--> S1 | S0 --b--> S2 | S1 --a--> S1 | S1 --b--> S2","{""": false, ""a"": false, ""b"": true, ""aa"": false, ""ab"": true, ...}","
+```
+
+#### Columna "Clase"
+
+La columna "Clase" contiene un diccionario JSON con exactamente 100 cadenas de prueba:
+
+- **50 cadenas aceptadas**: Cadenas que son aceptadas por el DFA (valor `true`)
+- **50 cadenas rechazadas**: Cadenas que son rechazadas por el DFA (valor `false`)
+
+Ejemplo de contenido de la columna "Clase":
+```json
+{
+  "": false,
+  "a": false,
+  "b": true,
+  "aa": false,
+  "ab": true,
+  "aaa": false,
+  "aab": true,
+  ...
+  "__REJECTED_rej_0_45__": false,
+  "__REJECTED_rej_1_45__": false
+}
+```
+
+**Características de las cadenas generadas:**
+- Las cadenas aceptadas son generadas probando diferentes combinaciones del alfabeto
+- Las cadenas rechazadas incluyen cadenas con símbolos fuera del alfabeto (garantizadas como rechazadas)
+- Todas las cadenas son únicas en el diccionario
+- El diccionario siempre contiene exactamente 100 entradas
+
+#### Manejo de errores
+
+Si una expresión regular es inválida, el endpoint continuará procesando las demás y registrará el error en la columna "Error":
+
+```csv
+Regex,Alfabeto,Estados de aceptación,Estados,Transiciones,Clase,Error
+((((,"","","","","","Línea 1: ValueError: Paréntesis desbalanceados."
+```
+
+#### Respuestas de error
+
+Si hay un error al procesar el archivo, el endpoint retornará un JSON con el error:
+
+```json
+{
+  "success": false,
+  "error": "No se proporcionó archivo. Use el campo 'file' en el formulario."
+}
+```
+
+Códigos de estado HTTP:
+- `200`: Archivo procesado exitosamente
+- `400`: Error en la petición (archivo faltante, formato inválido, etc.)
+
+#### Nombre del archivo de salida
+
+El archivo CSV generado se descarga con el nombre:
+- Formato: `regex_dataset_YYYYMMDD_HHMMSS.csv`
+- Ejemplo: `regex_dataset_20241107_143022.csv`
+
 ### Notas Importantes
 
 - **Hosts permitidos**: El backend acepta peticiones desde `localhost`, `127.0.0.1` y dominios `.vercel.app`
-- **URL del endpoint**: Asegúrate de usar la URL completa con la barra final: `/api/regex-to-dfa/`
+- **URL del endpoint**: Asegúrate de usar la URL completa con la barra final: `/api/regex-to-dfa/`, `/api/regex-to-dfa/jff/`, `/api/regex-file-to-csv/`
 - **CORS**: Está habilitado para todos los orígenes, por lo que el frontend puede hacer peticiones sin problemas
 - **Archivos JFF**: Los archivos generados son compatibles con JFLAP y se pueden abrir directamente en la herramienta
+- **Archivos CSV**: El endpoint de procesamiento de archivos acepta archivos `.txt` y `.csv`. El archivo CSV de salida incluye codificación UTF-8 y puede contener expresiones JSON en la columna "Clase"
+- **Límites**: El procesamiento de archivos puede tardar más tiempo dependiendo del número de expresiones regulares y la complejidad de cada una. Se recomienda procesar archivos con menos de 1000 expresiones regulares por lote
 
 ## Running Locally
 

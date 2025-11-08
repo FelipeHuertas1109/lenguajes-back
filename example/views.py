@@ -2,6 +2,8 @@
 from datetime import datetime
 import json
 import sys
+import os
+import tempfile
 
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.http import require_http_methods
@@ -15,7 +17,8 @@ from example.thompson_nfa import (
     get_dfa_alphabet,
     get_dfa_states,
     dfa_accepts,
-    dfa_to_jff_string
+    dfa_to_jff_string,
+    process_regex_file_to_csv_with_clase
 )
 
 
@@ -389,6 +392,145 @@ def regex_to_dfa_jff(request):
         print("[REGEX_TO_DFA_JFF] --- RESPUESTA DE ERROR ---")
         print(json.dumps(error_response, ensure_ascii=False, indent=2))
         print("[REGEX_TO_DFA_JFF] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        
+        return JsonResponse(error_response, status=400)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def regex_file_to_csv(request):
+    """
+    Endpoint que recibe un archivo txt o csv con expresiones regulares
+    y genera un CSV con los datos del DFA más una columna "Clase" que contiene
+    un diccionario JSON con 100 cadenas (50 aceptadas, 50 rechazadas) y sus valores.
+    
+    Parámetros:
+    - POST: archivo en el campo 'file'
+    
+    Retorna un archivo CSV descargable.
+    """
+    # ========== LOGS DE ENTRADA ==========
+    print("=" * 80)
+    print(f"[REGEX_FILE_TO_CSV] Petición recibida - {datetime.now()}")
+    print(f"[REGEX_FILE_TO_CSV] Método HTTP: {request.method}")
+    print(f"[REGEX_FILE_TO_CSV] IP Cliente: {request.META.get('REMOTE_ADDR', 'Unknown')}")
+    print(f"[REGEX_FILE_TO_CSV] User-Agent: {request.META.get('HTTP_USER_AGENT', 'Unknown')}")
+    sys.stdout.flush()
+    
+    # Verificar que se envió un archivo
+    if 'file' not in request.FILES:
+        print("[REGEX_FILE_TO_CSV] ERROR - No se proporcionó archivo")
+        sys.stdout.flush()
+        return JsonResponse({
+            "success": False,
+            "error": "No se proporcionó archivo. Use el campo 'file' en el formulario."
+        }, status=400)
+    
+    uploaded_file = request.FILES['file']
+    file_name = uploaded_file.name
+    file_extension = os.path.splitext(file_name)[1].lower()
+    
+    print(f"[REGEX_FILE_TO_CSV] Archivo recibido: {file_name}")
+    print(f"[REGEX_FILE_TO_CSV] Extensión: {file_extension}")
+    sys.stdout.flush()
+    
+    # Validar extensión
+    if file_extension not in ['.txt', '.csv']:
+        print(f"[REGEX_FILE_TO_CSV] ERROR - Extensión no válida: {file_extension}")
+        sys.stdout.flush()
+        return JsonResponse({
+            "success": False,
+            "error": f"Formato de archivo no soportado. Use .txt o .csv (recibido: {file_extension})"
+        }, status=400)
+    
+    try:
+        # Crear archivos temporales
+        with tempfile.NamedTemporaryFile(mode='w+b', delete=False, suffix=file_extension) as temp_input:
+            temp_input_path = temp_input.name
+            # Escribir el contenido del archivo subido
+            for chunk in uploaded_file.chunks():
+                temp_input.write(chunk)
+        
+        print(f"[REGEX_FILE_TO_CSV] Archivo temporal creado: {temp_input_path}")
+        sys.stdout.flush()
+        
+        # Crear archivo de salida temporal
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8') as temp_output:
+            temp_output_path = temp_output.name
+        
+        print(f"[REGEX_FILE_TO_CSV] Procesando archivo...")
+        sys.stdout.flush()
+        
+        # Procesar el archivo (la función ahora tiene prints de progreso internos)
+        process_regex_file_to_csv_with_clase(temp_input_path, temp_output_path)
+        
+        print(f"[REGEX_FILE_TO_CSV] Archivo procesado exitosamente")
+        print(f"[REGEX_FILE_TO_CSV] Archivo de salida: {temp_output_path}")
+        sys.stdout.flush()
+        
+        # Leer el contenido del CSV generado
+        with open(temp_output_path, 'r', encoding='utf-8') as f:
+            csv_content = f.read()
+        
+        csv_size = len(csv_content.encode('utf-8'))
+        print(f"[REGEX_FILE_TO_CSV] Tamaño del CSV generado: ~{csv_size} bytes")
+        print("[REGEX_FILE_TO_CSV] ÉXITO - CSV generado correctamente")
+        print("=" * 80)
+        sys.stdout.flush()
+        
+        # Limpiar archivos temporales
+        try:
+            os.unlink(temp_input_path)
+            os.unlink(temp_output_path)
+        except Exception as e:
+            print(f"[REGEX_FILE_TO_CSV] Advertencia - Error al limpiar archivos temporales: {e}")
+            sys.stdout.flush()
+        
+        # Generar nombre de archivo de salida
+        output_filename = f"regex_dataset_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        
+        # Crear respuesta HTTP con el archivo CSV
+        response = HttpResponse(csv_content, content_type='text/csv; charset=utf-8')
+        response['Content-Disposition'] = f'attachment; filename="{output_filename}"'
+        response['Content-Length'] = csv_size
+        return response
+    
+    except FileNotFoundError as e:
+        print(f"[REGEX_FILE_TO_CSV] ERROR - Archivo no encontrado: {e}")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "error": f"Error al procesar el archivo: {str(e)}"
+        }
+        return JsonResponse(error_response, status=400)
+    
+    except Exception as e:
+        import traceback
+        print(f"[REGEX_FILE_TO_CSV] ERROR - Excepción capturada:")
+        print(f"[REGEX_FILE_TO_CSV] Tipo: {type(e).__name__}")
+        print(f"[REGEX_FILE_TO_CSV] Mensaje: {str(e)}")
+        print(f"[REGEX_FILE_TO_CSV] Traceback:")
+        traceback.print_exc()
+        sys.stdout.flush()
+        
+        # Limpiar archivos temporales en caso de error
+        try:
+            if 'temp_input_path' in locals():
+                os.unlink(temp_input_path)
+            if 'temp_output_path' in locals():
+                os.unlink(temp_output_path)
+        except Exception:
+            pass
+        
+        error_response = {
+            "success": False,
+            "error": str(e)
+        }
+        print("[REGEX_FILE_TO_CSV] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[REGEX_FILE_TO_CSV] --- FIN RESPUESTA ---")
         print("=" * 80)
         sys.stdout.flush()
         
