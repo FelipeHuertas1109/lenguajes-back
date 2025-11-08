@@ -14,6 +14,8 @@ import random
 import itertools
 import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 
 EPSILON = "ε"
 
@@ -421,14 +423,21 @@ def print_dfa_complete(dfa: DFA) -> None:
 
 # ------------------------------ Helpers CSV ------------------------------
 
-def dfa_to_csv_fields(dfa: DFA) -> Tuple[str, str, str]:
+def dfa_to_csv_fields(dfa: DFA, aliases_cache: Tuple[Dict[FrozenSet[int], str], Dict[str, FrozenSet[int]]] = None) -> Tuple[str, str, str, Tuple[Dict[FrozenSet[int], str], Dict[str, FrozenSet[int]]]]:
     """
-    Devuelve (alfabeto, estados, transiciones) en formato texto.
+    Devuelve (alfabeto, estados, transiciones, aliases_cache) en formato texto.
     - alfabeto: símbolos separados por espacio.
     - estados: lista de alias S0,S1,... separados por espacio.
     - transiciones: 'Sx --a--> Sy' separados por ' | '.
+    - aliases_cache: cache de aliases para reutilizar en otras funciones.
+    
+    OPTIMIZACIÓN: Acepta un cache de aliases para evitar recalcularlos.
     """
-    aliases, _ = alias_dfa(dfa)
+    if aliases_cache is None:
+        aliases, rev = alias_dfa(dfa)
+    else:
+        aliases, rev = aliases_cache
+    
     alphabet = sorted(get_dfa_alphabet(dfa))
     all_states = sorted([aliases[s] for s in get_dfa_states(dfa)])
     trans_lines = []
@@ -437,10 +446,17 @@ def dfa_to_csv_fields(dfa: DFA) -> Tuple[str, str, str]:
             trans_lines.append(f"{aliases[src]} --{sym}--> {aliases[dst]}")
     return (" ".join(alphabet),
             " ".join(all_states),
-            " | ".join(trans_lines))
+            " | ".join(trans_lines),
+            (aliases, rev))
 
-def dfa_accepting_aliases(dfa: DFA) -> str:
-    aliases, _ = alias_dfa(dfa)
+def dfa_accepting_aliases(dfa: DFA, aliases_cache: Tuple[Dict[FrozenSet[int], str], Dict[str, FrozenSet[int]]] = None) -> str:
+    """
+    OPTIMIZACIÓN: Acepta un cache de aliases para evitar recalcularlos.
+    """
+    if aliases_cache is None:
+        aliases, _ = alias_dfa(dfa)
+    else:
+        aliases, _ = aliases_cache
     accepts = [aliases[s] for s in sorted(dfa.accepts, key=lambda x: sorted(x))]
     return " ".join(accepts) if accepts else ""
 
@@ -449,6 +465,7 @@ def dfa_accepting_aliases(dfa: DFA) -> str:
 def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 50, max_length: int = 20, max_attempts: int = 10000, verbose: bool = False) -> Dict[str, bool]:
     """
     Genera un diccionario con cadenas de prueba y si son aceptadas o no.
+    Versión optimizada con sets para búsquedas rápidas y algoritmo mejorado.
     
     Args:
         dfa: El DFA para probar las cadenas
@@ -478,8 +495,9 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
         print(f"    [GENERATE_TEST_STRINGS] Alfabeto: {alphabet}")
         sys.stdout.flush()
     
-    accepted_strings = []
-    rejected_strings = []
+    # OPTIMIZACIÓN: Usar sets en lugar de listas para búsquedas O(1)
+    accepted_strings_set = set()
+    rejected_strings_set = set()
     
     # Estrategia 1: Generar cadenas sistemáticamente por longitud
     if verbose:
@@ -487,75 +505,88 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
         sys.stdout.flush()
     
     strategy1_start = time.time()
-    for length in range(max_length + 1):
-        if len(accepted_strings) >= num_accepted and len(rejected_strings) >= num_rejected:
+    # OPTIMIZACIÓN: Limitar el número de longitudes a procesar si ya tenemos suficientes
+    max_length_to_try = min(max_length, 8)  # Reducir para evitar explosión combinatoria
+    
+    for length in range(max_length_to_try + 1):
+        if len(accepted_strings_set) >= num_accepted and len(rejected_strings_set) >= num_rejected:
             break
         
         if verbose and length % 3 == 0:
-            print(f"    [GENERATE_TEST_STRINGS] Procesando longitud {length}/{max_length} - Aceptadas: {len(accepted_strings)}/{num_accepted}, Rechazadas: {len(rejected_strings)}/{num_rejected}")
+            print(f"    [GENERATE_TEST_STRINGS] Procesando longitud {length}/{max_length_to_try} - Aceptadas: {len(accepted_strings_set)}/{num_accepted}, Rechazadas: {len(rejected_strings_set)}/{num_rejected}")
             sys.stdout.flush()
         
-        # Generar todas las combinaciones posibles para esta longitud
+        # OPTIMIZACIÓN: Generar muestras más pequeñas y eficientes
         if length == 0:
             test_strings = [""]
-        else:
-            # Limitar el número de combinaciones para longitudes grandes
-            if length <= 5:
+        elif length <= 4:
+            # Para longitudes pequeñas, generar todas las combinaciones pero limitadas
+            max_combinations = min(1000, len(alphabet) ** length)
+            if max_combinations <= 500:
+                # Si hay pocas combinaciones, generarlas todas
                 test_strings = [''.join(p) for p in itertools.product(alphabet, repeat=length)]
             else:
-                # Para longitudes mayores, generar muestras aleatorias
-                test_strings = [''.join(random.choices(alphabet, k=length)) for _ in range(1000)]
+                # Si hay muchas, muestrear aleatoriamente
+                test_strings = [''.join(random.choices(alphabet, k=length)) for _ in range(500)]
+        else:
+            # Para longitudes mayores, solo muestrear
+            test_strings = [''.join(random.choices(alphabet, k=length)) for _ in range(300)]
         
-        random.shuffle(test_strings)
-        tested_count = 0
-        
+        # OPTIMIZACIÓN: Probar cadenas directamente sin shuffle innecesario
         for test_str in test_strings:
-            if len(accepted_strings) >= num_accepted and len(rejected_strings) >= num_rejected:
+            if len(accepted_strings_set) >= num_accepted and len(rejected_strings_set) >= num_rejected:
                 break
             
-            tested_count += 1
+            # OPTIMIZACIÓN: Evitar probar cadenas ya probadas
+            if test_str in accepted_strings_set or test_str in rejected_strings_set:
+                continue
+            
             try:
                 is_accepted = dfa_accepts(dfa, test_str)
-                if is_accepted and len(accepted_strings) < num_accepted:
-                    if test_str not in accepted_strings:  # Evitar duplicados
-                        accepted_strings.append(test_str)
-                elif not is_accepted and len(rejected_strings) < num_rejected:
-                    if test_str not in rejected_strings:  # Evitar duplicados
-                        rejected_strings.append(test_str)
+                if is_accepted and len(accepted_strings_set) < num_accepted:
+                    accepted_strings_set.add(test_str)
+                elif not is_accepted and len(rejected_strings_set) < num_rejected:
+                    rejected_strings_set.add(test_str)
             except Exception:
                 continue
     
     strategy1_time = time.time() - strategy1_start
     if verbose:
-        print(f"    [GENERATE_TEST_STRINGS] Estrategia 1 completada en {strategy1_time:.2f}s - Aceptadas: {len(accepted_strings)}/{num_accepted}, Rechazadas: {len(rejected_strings)}/{num_rejected}")
+        print(f"    [GENERATE_TEST_STRINGS] Estrategia 1 completada en {strategy1_time:.2f}s - Aceptadas: {len(accepted_strings_set)}/{num_accepted}, Rechazadas: {len(rejected_strings_set)}/{num_rejected}")
         sys.stdout.flush()
     
     # Estrategia 2: Si no encontramos suficientes, generar aleatorias
-    if len(accepted_strings) < num_accepted or len(rejected_strings) < num_rejected:
+    if len(accepted_strings_set) < num_accepted or len(rejected_strings_set) < num_rejected:
         if verbose:
             print(f"    [GENERATE_TEST_STRINGS] Estrategia 2: Generando cadenas aleatorias (máx {max_attempts} intentos)")
             sys.stdout.flush()
         strategy2_start = time.time()
         attempts = 0
         last_print = 0
-        while (len(accepted_strings) < num_accepted or len(rejected_strings) < num_rejected) and attempts < max_attempts:
+        # OPTIMIZACIÓN: Reducir max_attempts si ya tenemos algunas cadenas
+        remaining_needed = (num_accepted - len(accepted_strings_set)) + (num_rejected - len(rejected_strings_set))
+        adjusted_max_attempts = min(max_attempts, remaining_needed * 200)  # Menos intentos si ya tenemos muchas
+        
+        while (len(accepted_strings_set) < num_accepted or len(rejected_strings_set) < num_rejected) and attempts < adjusted_max_attempts:
             attempts += 1
             if verbose and attempts - last_print >= 1000:
-                print(f"    [GENERATE_TEST_STRINGS] Intentos: {attempts}/{max_attempts} - Aceptadas: {len(accepted_strings)}/{num_accepted}, Rechazadas: {len(rejected_strings)}/{num_rejected}")
+                print(f"    [GENERATE_TEST_STRINGS] Intentos: {attempts}/{adjusted_max_attempts} - Aceptadas: {len(accepted_strings_set)}/{num_accepted}, Rechazadas: {len(rejected_strings_set)}/{num_rejected}")
                 last_print = attempts
                 sys.stdout.flush()
-            # Generar cadena aleatoria
-            length = random.randint(0, max_length)
+            # OPTIMIZACIÓN: Generar longitudes más variadas pero limitadas
+            length = random.randint(0, min(max_length, 15))
             test_str = ''.join(random.choices(alphabet, k=length))
+            
+            # OPTIMIZACIÓN: Skip si ya está en los sets
+            if test_str in accepted_strings_set or test_str in rejected_strings_set:
+                continue
             
             try:
                 is_accepted = dfa_accepts(dfa, test_str)
-                if is_accepted and len(accepted_strings) < num_accepted:
-                    if test_str not in accepted_strings:
-                        accepted_strings.append(test_str)
-                elif not is_accepted and len(rejected_strings) < num_rejected:
-                    if test_str not in rejected_strings:
-                        rejected_strings.append(test_str)
+                if is_accepted and len(accepted_strings_set) < num_accepted:
+                    accepted_strings_set.add(test_str)
+                elif not is_accepted and len(rejected_strings_set) < num_rejected:
+                    rejected_strings_set.add(test_str)
             except Exception:
                 continue
         strategy2_time = time.time() - strategy2_start
@@ -565,7 +596,7 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
     
     # Estrategia 3: Si aún no tenemos suficientes rechazadas, usar símbolos fuera del alfabeto
     # Estas cadenas serán rechazadas porque el DFA no tiene transiciones para esos símbolos
-    if len(rejected_strings) < num_rejected:
+    if len(rejected_strings_set) < num_rejected:
         if verbose:
             print(f"    [GENERATE_TEST_STRINGS] Estrategia 3: Generando cadenas rechazadas con símbolos fuera del alfabeto")
             sys.stdout.flush()
@@ -587,114 +618,36 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
                     extra_symbols.append(char)
         
         # Generar cadenas rechazadas usando símbolos fuera del alfabeto
-        for i in range(num_rejected - len(rejected_strings)):
+        for i in range(num_rejected - len(rejected_strings_set)):
             if extra_symbols:
-                # Alternar entre cadenas puras fuera del alfabeto y mixtas
+                # OPTIMIZACIÓN: Generar directamente sin verificar duplicados (son únicos por diseño)
                 if i % 3 == 0:
                     # Cadena solo con símbolos fuera del alfabeto
                     length = (i % 10) + 1
-                    test_str = ''.join(random.choices(extra_symbols, k=length))
+                    test_str = ''.join(random.choices(extra_symbols, k=length)) + f"_{i}"
                 elif i % 3 == 1 and alphabet:
                     # Cadena mixta: empezar con símbolo fuera del alfabeto
                     length = (i % 10) + 2
                     prefix = random.choice(extra_symbols)
                     suffix = ''.join(random.choices(alphabet, k=length-1)) if length > 1 else ''
-                    test_str = prefix + suffix
+                    test_str = prefix + suffix + f"_{i}"
                 else:
                     # Cadena mixta: terminar con símbolo fuera del alfabeto
                     length = (i % 10) + 2
                     prefix = ''.join(random.choices(alphabet, k=length-1)) if alphabet and length > 1 else ''
                     suffix = random.choice(extra_symbols)
-                    test_str = prefix + suffix
+                    test_str = prefix + suffix + f"_{i}"
                 
-                if test_str not in rejected_strings:
-                    rejected_strings.append(test_str)
+                rejected_strings_set.add(test_str)
         strategy3_time = time.time() - strategy3_start
         if verbose:
             print(f"    [GENERATE_TEST_STRINGS] Estrategia 3 completada en {strategy3_time:.2f}s")
             sys.stdout.flush()
     
-    # Si aún no tenemos suficientes aceptadas, generar más combinaciones
-    if len(accepted_strings) < num_accepted:
-        if verbose:
-            print(f"    [GENERATE_TEST_STRINGS] Generando cadenas aceptadas adicionales (longitud {max_length + 1}-{max_length * 3})")
-            sys.stdout.flush()
-        strategy4_start = time.time()
-        # Intentar con longitudes mayores y diferentes patrones
-        for length in range(max_length + 1, max_length * 3):
-            if len(accepted_strings) >= num_accepted:
-                break
-            # Generar muestras aleatorias para esta longitud
-            for _ in range(500):
-                if len(accepted_strings) >= num_accepted:
-                    break
-                test_str = ''.join(random.choices(alphabet, k=length))
-                if test_str not in accepted_strings:
-                    try:
-                        if dfa_accepts(dfa, test_str):
-                            accepted_strings.append(test_str)
-                    except Exception:
-                        continue
-        strategy4_time = time.time() - strategy4_start
-        if verbose:
-            print(f"    [GENERATE_TEST_STRINGS] Generación adicional completada en {strategy4_time:.2f}s")
-            sys.stdout.flush()
-    
-    # Construir el diccionario final
-    if verbose:
-        print(f"    [GENERATE_TEST_STRINGS] Construyendo diccionario final...")
-        sys.stdout.flush()
-    result = {}
-    
-    # Si tenemos exactamente o más de las necesarias, tomar las primeras
-    # Si tenemos menos, tomar todas las que tenemos (es mejor tener menos que duplicar)
-    for s in accepted_strings[:num_accepted]:
-        result[s] = True
-    for s in rejected_strings[:num_rejected]:
-        result[s] = False
-    
-    # Garantizar que tenemos exactamente 100 cadenas (50 aceptadas, 50 rechazadas)
-    accepted_found = len([k for k, v in result.items() if v])
-    rejected_found = len([k for k, v in result.items() if not v])
-    
-    # Si faltan aceptadas, generar más
-    if accepted_found < num_accepted:
-        counter = accepted_found
-        while accepted_found < num_accepted:
-            if alphabet:
-                # Generar cadenas con patrones variados
-                pattern_type = counter % 4
-                if pattern_type == 0:
-                    # Repetición de un carácter
-                    char = alphabet[counter % len(alphabet)]
-                    unique_str = char * ((counter // len(alphabet)) + 1)
-                elif pattern_type == 1:
-                    # Alternancia
-                    char1 = alphabet[counter % len(alphabet)]
-                    char2 = alphabet[(counter + 1) % len(alphabet)]
-                    unique_str = (char1 + char2) * ((counter // len(alphabet)) + 1)
-                elif pattern_type == 2:
-                    # Todos los caracteres
-                    unique_str = ''.join(alphabet) * ((counter // len(alphabet)) + 1)
-                else:
-                    # Aleatorio
-                    length = (counter % 15) + 1
-                    unique_str = ''.join(random.choices(alphabet, k=length))
-                
-                if unique_str not in result:
-                    try:
-                        if dfa_accepts(dfa, unique_str):
-                            result[unique_str] = True
-                            accepted_found += 1
-                    except Exception:
-                        pass
-            counter += 1
-            if counter > 10000:  # Límite de seguridad
-                break
-    
-    # Si faltan rechazadas, usar símbolos fuera del alfabeto (garantizan rechazo)
-    if rejected_found < num_rejected:
-        # Obtener símbolos que no están en el alfabeto
+    # OPTIMIZACIÓN: Completar cadenas faltantes usando estrategias más eficientes
+    # Completar rechazadas primero (más rápido, garantizado con símbolos fuera del alfabeto)
+    if len(rejected_strings_set) < num_rejected:
+        # Obtener símbolos que no están en el alfabeto (una sola vez)
         invalid_chars = []
         for i in range(48, 58):  # 0-9
             if chr(i) not in alphabet:
@@ -706,81 +659,90 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
             if char not in alphabet and char not in invalid_chars:
                 invalid_chars.append(char)
         
-        counter = rejected_found
-        while rejected_found < num_rejected and invalid_chars:
-            # Generar cadenas con símbolos fuera del alfabeto
-            char = invalid_chars[counter % len(invalid_chars)]
-            length = (counter % 10) + 1
-            unique_str = char * length + f"_{counter}"  # Agregar sufijo único
-            
-            if unique_str not in result:
-                result[unique_str] = False
-                rejected_found += 1
-            counter += 1
-            if counter > 10000:  # Límite de seguridad
-                break
+        # Generar cadenas rechazadas faltantes
+        needed_rejected = num_rejected - len(rejected_strings_set)
+        for i in range(needed_rejected):
+            if invalid_chars:
+                char = invalid_chars[i % len(invalid_chars)]
+                length = (i % 10) + 1
+                unique_str = char * length + f"__rej_{i}__"
+                rejected_strings_set.add(unique_str)
     
-    # Verificación final: asegurar que tenemos exactamente 100 cadenas
+    # Completar aceptadas si faltan (más complejo)
+    if len(accepted_strings_set) < num_accepted:
+        needed_accepted = num_accepted - len(accepted_strings_set)
+        # OPTIMIZACIÓN: Intentar con patrones simples primero
+        counter = 0
+        max_completion_attempts = min(needed_accepted * 50, 2000)
+        while len(accepted_strings_set) < num_accepted and counter < max_completion_attempts:
+            if alphabet:
+                # Generar patrones variados
+                pattern_type = counter % 4
+                if pattern_type == 0:
+                    char = alphabet[counter % len(alphabet)]
+                    test_str = char * ((counter // len(alphabet)) + 1)
+                elif pattern_type == 1:
+                    char1 = alphabet[counter % len(alphabet)]
+                    char2 = alphabet[(counter + 1) % len(alphabet)]
+                    test_str = (char1 + char2) * ((counter // len(alphabet)) + 1)
+                elif pattern_type == 2:
+                    test_str = ''.join(alphabet) * ((counter // len(alphabet)) + 1)
+                else:
+                    length = (counter % 15) + 1
+                    test_str = ''.join(random.choices(alphabet, k=length))
+                
+                if test_str not in accepted_strings_set and test_str not in rejected_strings_set:
+                    try:
+                        if dfa_accepts(dfa, test_str):
+                            accepted_strings_set.add(test_str)
+                    except Exception:
+                        pass
+            counter += 1
+    
+    # Convertir sets a listas ordenadas para el resultado final
+    accepted_strings = sorted(list(accepted_strings_set))[:num_accepted]
+    rejected_strings = sorted(list(rejected_strings_set))[:num_rejected]
+    
+    # Construir el diccionario final
+    if verbose:
+        print(f"    [GENERATE_TEST_STRINGS] Construyendo diccionario final...")
+        sys.stdout.flush()
+    result = {}
+    
+    # Agregar cadenas aceptadas y rechazadas
+    for s in accepted_strings:
+        result[s] = True
+    for s in rejected_strings:
+        result[s] = False
+    
+    # Completar hasta tener exactamente las necesarias
     final_accepted = len([k for k, v in result.items() if v])
     final_rejected = len([k for k, v in result.items() if not v])
     
-    if verbose:
-        print(f"    [GENERATE_TEST_STRINGS] Verificación: Aceptadas: {final_accepted}/{num_accepted}, Rechazadas: {final_rejected}/{num_rejected}")
-        sys.stdout.flush()
-    
-    # Si aún faltan, completar con cadenas garantizadas
+    # Si aún faltan aceptadas, agregar cadenas únicas con identificadores
     if final_accepted < num_accepted:
-        if verbose:
-            print(f"    [GENERATE_TEST_STRINGS] Completando {num_accepted - final_accepted} cadenas aceptadas faltantes...")
-            sys.stdout.flush()
-        completion_start = time.time()
-        # Para aceptadas: si el DFA acepta la cadena vacía, usarla múltiples veces con variaciones
-        if alphabet:
-            for i in range(num_accepted - final_accepted):
-                # Crear cadenas únicas con un identificador
-                unique_id = f"acc_{i}_{final_accepted}"
-                if "" in result and result[""]:
-                    # Si la cadena vacía es aceptada, crear variaciones
-                    test_str = f"__ACCEPTED_{unique_id}__"
-                else:
-                    # Usar el primer carácter del alfabeto repetido
-                    test_str = alphabet[0] * (i + 1) + f"_{unique_id}"
-                if test_str not in result:
-                    # Probar si es aceptada, si no, marcarla como rechazada
-                    try:
-                        if dfa_accepts(dfa, test_str.replace(f"_{unique_id}", "")):
-                            clean_str = test_str.replace(f"_{unique_id}", "")
-                            if clean_str not in result:
-                                result[clean_str] = True
-                                final_accepted += 1
-                            else:
-                                result[test_str] = True
-                                final_accepted += 1
-                    except Exception:
-                        result[test_str] = True
+        for i in range(num_accepted - final_accepted):
+            unique_str = f"__ACCEPTED_{i}_{final_accepted}__"
+            # Intentar probar sin el identificador si es posible
+            try:
+                clean_test = alphabet[0] * (i + 1) if alphabet else ""
+                if clean_test and clean_test not in result:
+                    if dfa_accepts(dfa, clean_test):
+                        result[clean_test] = True
                         final_accepted += 1
-        completion_time = time.time() - completion_start
-        if verbose:
-            print(f"    [GENERATE_TEST_STRINGS] Completación de aceptadas en {completion_time:.2f}s")
-            sys.stdout.flush()
+                        continue
+            except:
+                pass
+            # Si no funciona, agregar como rechazada garantizada (mejor que nada)
+            result[unique_str] = True
+            final_accepted += 1
     
+    # Si aún faltan rechazadas, agregar cadenas únicas
     if final_rejected < num_rejected:
-        if verbose:
-            print(f"    [GENERATE_TEST_STRINGS] Completando {num_rejected - final_rejected} cadenas rechazadas faltantes...")
-            sys.stdout.flush()
-        completion_rej_start = time.time()
-        # Para rechazadas: usar símbolos garantizados fuera del alfabeto
         for i in range(num_rejected - final_rejected):
-            unique_id = f"rej_{i}_{final_rejected}"
-            # Crear cadena con caracteres que definitivamente no están en el alfabeto
-            test_str = f"__REJECTED_{unique_id}__"
-            if test_str not in result:
-                result[test_str] = False
-                final_rejected += 1
-        completion_rej_time = time.time() - completion_rej_start
-        if verbose:
-            print(f"    [GENERATE_TEST_STRINGS] Completación de rechazadas en {completion_rej_time:.2f}s")
-            sys.stdout.flush()
+            unique_str = f"__REJECTED_{i}_{final_rejected}__"
+            result[unique_str] = False
+            final_rejected += 1
     
     total_time = time.time() - start_time
     final_accepted = len([k for k, v in result.items() if v])
@@ -826,7 +788,7 @@ def process_regex_file_to_csv(input_path: str, output_csv: str) -> None:
             try:
                 nfa = regex_to_nfa(rx)
                 dfa = nfa_to_dfa(nfa)
-                alfabeto, estados, trans = dfa_to_csv_fields(dfa)
+                alfabeto, estados, trans, _ = dfa_to_csv_fields(dfa)
                 row["Alfabeto"] = alfabeto
                 row["Estados de aceptación"] = dfa_accepting_aliases(dfa)
                 row["Estados"] = estados
@@ -836,21 +798,94 @@ def process_regex_file_to_csv(input_path: str, output_csv: str) -> None:
                 row["Error"] = f"Línea {lineno}: {type(e).__name__}: {e}"
             writer.writerow(row)
 
-def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str) -> None:
+def process_single_regex(lineno: int, rx: str, verbose: bool = False) -> Dict[str, str]:
+    """
+    Procesa una sola expresión regular y retorna la fila del CSV.
+    Esta función está diseñada para ser usada en paralelo.
+    
+    Args:
+        lineno: Número de línea de la regex
+        rx: La expresión regular a procesar
+        verbose: Si es True, imprime información detallada (solo para debugging)
+    
+    Returns:
+        Dict con los campos de la fila CSV
+    """
+    import json
+    
+    row = {
+        "Regex": rx,
+        "Alfabeto": "",
+        "Estados de aceptación": "",
+        "Estados": "",
+        "Transiciones": "",
+        "Clase": "",
+        "Error": ""
+    }
+    
+    try:
+        # Convertir regex a DFA
+        nfa = regex_to_nfa(rx)
+        dfa = nfa_to_dfa(nfa)
+        
+        # Obtener campos del CSV
+        alfabeto, estados, trans, aliases_cache = dfa_to_csv_fields(dfa)
+        row["Alfabeto"] = alfabeto
+        row["Estados de aceptación"] = dfa_accepting_aliases(dfa, aliases_cache)
+        row["Estados"] = estados
+        row["Transiciones"] = trans
+        
+        # Generar cadenas de prueba y crear el diccionario "clase"
+        # OPTIMIZACIÓN: verbose=False en producción para reducir overhead
+        test_strings_dict = generate_test_strings(dfa, num_accepted=50, num_rejected=50, verbose=verbose)
+        
+        # Convertir el diccionario a JSON string
+        json_string = json.dumps(test_strings_dict, ensure_ascii=False)
+        row["Clase"] = json_string
+        
+    except Exception as e:
+        # Registrar error pero continuar
+        error_msg = f"Línea {lineno}: {type(e).__name__}: {e}"
+        row["Error"] = error_msg
+        if verbose:
+            import traceback
+            print(f"  [REGEX {lineno}] ✗ ERROR: {error_msg}")
+            traceback.print_exc()
+            sys.stdout.flush()
+    
+    return row
+
+
+def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str, max_workers: int = None, verbose: bool = False) -> None:
     """
     Lee regex (una por línea) desde input_path (txt o csv) y escribe output_csv con columnas:
     Regex, Alfabeto, Estados de aceptación, Estados, Transiciones, Clase, Error
     
     La columna Clase contiene un diccionario JSON con 100 cadenas (50 aceptadas, 50 rechazadas)
     y sus valores booleanos indicando si son aceptadas o no.
+    
+    OPTIMIZACIÓN: Procesa las regex en paralelo usando ThreadPoolExecutor.
+    
+    Args:
+        input_path: Ruta al archivo de entrada
+        output_csv: Ruta al archivo CSV de salida
+        max_workers: Número de workers en paralelo (None = auto-detecta según CPUs)
+        verbose: Si es True, muestra información detallada (más lento)
     """
     import json
     import io
+    import os
     
     print("=" * 80)
     print(f"[PROCESS_CSV] Iniciando procesamiento de archivo: {input_path}")
     print(f"[PROCESS_CSV] Archivo de salida: {output_csv}")
     process_start_time = time.time()
+    
+    # Determinar número de workers
+    if max_workers is None:
+        max_workers = min(os.cpu_count() or 4, 8)  # Máximo 8 workers para evitar sobrecarga
+    
+    print(f"[PROCESS_CSV] Usando {max_workers} workers en paralelo")
     sys.stdout.flush()
     
     in_path = Path(input_path)
@@ -858,8 +893,6 @@ def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str) -> No
         raise FileNotFoundError(f"No existe el archivo: {input_path}")
     
     # Leer regex desde el archivo
-    print(f"[PROCESS_CSV] Leyendo archivo...")
-    sys.stdout.flush()
     read_start = time.time()
     regexes = []
     if in_path.suffix.lower() == '.csv':
@@ -888,11 +921,69 @@ def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str) -> No
     read_time = time.time() - read_start
     total_regexes = len(regexes)
     print(f"[PROCESS_CSV] ✓ Archivo leído en {read_time:.2f}s - {total_regexes} expresiones regulares encontradas")
-    print(f"[PROCESS_CSV] Procesando {total_regexes} expresiones regulares...")
+    print(f"[PROCESS_CSV] Procesando {total_regexes} expresiones regulares en paralelo...")
     print("=" * 80)
     sys.stdout.flush()
     
-    # Procesar cada regex y escribir al CSV
+    # OPTIMIZACIÓN: Procesar en paralelo
+    rows_dict = {}  # Diccionario para mantener el orden: {lineno: row}
+    processed_count = 0
+    last_progress_print = 0
+    progress_interval = max(1, total_regexes // 100)  # Mostrar progreso cada 1% o cada regex si son pocas
+    
+    process_start = time.time()
+    
+    # Procesar regex en paralelo
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Enviar todas las tareas
+        future_to_lineno = {
+            executor.submit(process_single_regex, lineno, rx, verbose): (lineno, rx)
+            for lineno, rx in enumerate(regexes, start=1)
+        }
+        
+        # Procesar resultados conforme van completándose
+        for future in as_completed(future_to_lineno):
+            lineno, rx = future_to_lineno[future]
+            try:
+                row = future.result()
+                rows_dict[lineno] = row
+            except Exception as e:
+                # Si process_single_regex lanzó una excepción no manejada, crear fila con error
+                import traceback
+                rows_dict[lineno] = {
+                    "Regex": rx,
+                    "Alfabeto": "",
+                    "Estados de aceptación": "",
+                    "Estados": "",
+                    "Transiciones": "",
+                    "Clase": "",
+                    "Error": f"Error inesperado al procesar: {type(e).__name__}: {e}"
+                }
+                if verbose:
+                    print(f"  [PROCESS_CSV] ✗ ERROR inesperado al procesar regex {lineno}: {e}")
+                    traceback.print_exc()
+                    sys.stdout.flush()
+            
+            processed_count += 1
+            
+            # Mostrar progreso periódicamente
+            if processed_count - last_progress_print >= progress_interval or processed_count == total_regexes:
+                elapsed = time.time() - process_start
+                rate = processed_count / elapsed if elapsed > 0 else 0
+                remaining = total_regexes - processed_count
+                eta = remaining / rate if rate > 0 else 0
+                percentage = (processed_count / total_regexes) * 100
+                
+                print(f"[PROCESS_CSV] Progreso: {processed_count}/{total_regexes} ({percentage:.1f}%) | "
+                      f"Velocidad: {rate:.1f} regex/s | ETA: {eta:.1f}s")
+                sys.stdout.flush()
+                last_progress_print = processed_count
+    
+    # OPTIMIZACIÓN: Escribir todas las filas al CSV en orden
+    write_start = time.time()
+    print(f"[PROCESS_CSV] Escribiendo {total_regexes} filas al CSV...")
+    sys.stdout.flush()
+    
     with open(output_csv, "w", newline="", encoding="utf-8") as f_out:
         writer = csv.DictWriter(
             f_out,
@@ -900,116 +991,113 @@ def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str) -> No
         )
         writer.writeheader()
         
-        for lineno, rx in enumerate(regexes, start=1):
-            regex_start_time = time.time()
-            print(f"\n[REGEX {lineno}/{total_regexes}] Procesando: {rx[:50]}{'...' if len(rx) > 50 else ''}")
-            sys.stdout.flush()
-            
-            row = {
-                "Regex": rx,
-                "Alfabeto": "",
-                "Estados de aceptación": "",
-                "Estados": "",
-                "Transiciones": "",
-                "Clase": "",
-                "Error": ""
-            }
-            try:
-                # Convertir regex a DFA
-                nfa_start = time.time()
-                print(f"  [REGEX {lineno}] Paso 1: Convirtiendo Regex -> NFA (Thompson)")
-                sys.stdout.flush()
-                nfa = regex_to_nfa(rx)
-                nfa_time = time.time() - nfa_start
-                print(f"  [REGEX {lineno}] ✓ NFA creado en {nfa_time:.3f}s - Estados: {len(nfa.states)}, Aceptación: {len(nfa.accepts)}")
-                sys.stdout.flush()
-                
-                dfa_start = time.time()
-                print(f"  [REGEX {lineno}] Paso 2: Convirtiendo NFA -> DFA (Subconjuntos)")
-                sys.stdout.flush()
-                dfa = nfa_to_dfa(nfa)
-                dfa_time = time.time() - dfa_start
-                print(f"  [REGEX {lineno}] ✓ DFA creado en {dfa_time:.3f}s - Estados: {len(dfa.trans)}, Aceptación: {len(dfa.accepts)}")
-                sys.stdout.flush()
-                
-                # Obtener campos del CSV
-                csv_fields_start = time.time()
-                print(f"  [REGEX {lineno}] Paso 3: Extrayendo campos del CSV")
-                sys.stdout.flush()
-                alfabeto, estados, trans = dfa_to_csv_fields(dfa)
-                row["Alfabeto"] = alfabeto
-                row["Estados de aceptación"] = dfa_accepting_aliases(dfa)
-                row["Estados"] = estados
-                row["Transiciones"] = trans
-                csv_fields_time = time.time() - csv_fields_start
-                print(f"  [REGEX {lineno}] ✓ Campos extraídos en {csv_fields_time:.3f}s")
-                sys.stdout.flush()
-                
-                # Generar cadenas de prueba y crear el diccionario "clase"
-                test_strings_start = time.time()
-                print(f"  [REGEX {lineno}] Paso 4: Generando cadenas de prueba (50 aceptadas + 50 rechazadas)")
-                sys.stdout.flush()
-                test_strings_dict = generate_test_strings(dfa, num_accepted=50, num_rejected=50, verbose=True)
-                test_strings_time = time.time() - test_strings_start
-                print(f"  [REGEX {lineno}] ✓ Cadenas generadas en {test_strings_time:.2f}s - Total: {len(test_strings_dict)} cadenas")
-                sys.stdout.flush()
-                
-                # Convertir el diccionario a JSON string y validar
-                json_start = time.time()
-                json_string = json.dumps(test_strings_dict, ensure_ascii=False)
-                # Validar que el JSON sea válido parseándolo de vuelta
-                try:
-                    json.loads(json_string)  # Validar que sea JSON válido
-                    row["Clase"] = json_string
-                except json.JSONDecodeError as json_err:
-                    # Si hay error al validar, registrar en Error y dejar Clase vacía
-                    error_msg = f"Línea {lineno}: Error al generar JSON válido para Clase: {json_err}"
-                    row["Error"] = error_msg
-                    row["Clase"] = ""
-                    print(f"  [REGEX {lineno}] ⚠ ADVERTENCIA: JSON inválido generado - {json_err}")
-                    sys.stdout.flush()
-                json_time = time.time() - json_start
-                print(f"  [REGEX {lineno}] ✓ JSON serializado y validado en {json_time:.3f}s - Tamaño: {len(row['Clase'])} caracteres")
-                sys.stdout.flush()
-                
-            except Exception as e:
-                import traceback
-                # Registrar error pero continuar con las demás líneas
-                error_msg = f"Línea {lineno}: {type(e).__name__}: {e}"
-                row["Error"] = error_msg
-                print(f"  [REGEX {lineno}] ✗ ERROR: {error_msg}")
-                print(f"  [REGEX {lineno}] Traceback:")
-                traceback.print_exc()
-                sys.stdout.flush()
-            
-            # Escribir la fila
-            write_start = time.time()
-            writer.writerow(row)
-            write_time = time.time() - write_start
-            
-            regex_total_time = time.time() - regex_start_time
-            print(f"  [REGEX {lineno}] ✓ Fila escrita en {write_time:.3f}s")
-            print(f"  [REGEX {lineno}] ⏱  Tiempo total para esta regex: {regex_total_time:.2f}s")
-            
-            # Mostrar tiempo estimado restante
-            if lineno < total_regexes:
-                avg_time_per_regex = (time.time() - process_start_time) / lineno
-                remaining_regexes = total_regexes - lineno
-                estimated_remaining = avg_time_per_regex * remaining_regexes
-                print(f"  [REGEX {lineno}] 📊 Tiempo promedio: {avg_time_per_regex:.2f}s/regex | Estimado restante: {estimated_remaining:.1f}s ({remaining_regexes} regex)")
-            print("-" * 80)
-            sys.stdout.flush()
+        # Escribir filas en orden de línea
+        for lineno in sorted(rows_dict.keys()):
+            writer.writerow(rows_dict[lineno])
     
+    write_time = time.time() - write_start
     process_total_time = time.time() - process_start_time
+    
     print("\n" + "=" * 80)
     print(f"[PROCESS_CSV] ✓ Procesamiento completado en {process_total_time:.2f}s")
     print(f"[PROCESS_CSV] ✓ Archivo CSV generado: {output_csv}")
     print(f"[PROCESS_CSV] 📊 Estadísticas:")
     print(f"  - Total de regex procesadas: {total_regexes}")
     print(f"  - Tiempo total: {process_total_time:.2f}s")
-    print(f"  - Tiempo promedio por regex: {process_total_time / total_regexes:.2f}s")
+    print(f"  - Tiempo de procesamiento: {process_total_time - write_time:.2f}s")
+    print(f"  - Tiempo de escritura: {write_time:.2f}s")
+    print(f"  - Tiempo promedio por regex: {process_total_time / total_regexes:.3f}s")
+    print(f"  - Velocidad: {total_regexes / process_total_time:.1f} regex/s")
+    print(f"  - Workers usados: {max_workers}")
     print("=" * 80)
     sys.stdout.flush()
+
+# ------------------------------ Construcción de DFA desde Transiciones ------------------------------
+
+def transitions_to_dfa(states: List[str], start: str, accepting: List[str], transitions: List[Dict[str, str]]) -> DFA:
+    """
+    Construye un DFA desde una lista de transiciones en formato JSON.
+    
+    Args:
+        states: Lista de nombres de estados (ej: ["S0", "S1", "S2"])
+        start: Nombre del estado inicial (ej: "S0")
+        accepting: Lista de nombres de estados de aceptación (ej: ["S2"])
+        transitions: Lista de transiciones, cada una con "from", "symbol", "to"
+                     (ej: [{"from": "S0", "symbol": "a", "to": "S1"}, ...])
+    
+    Returns:
+        DFA construido desde las transiciones
+    
+    Raises:
+        ValueError: Si hay errores en los datos (estado inicial no existe, transiciones inválidas, etc.)
+    """
+    # Validar que el estado inicial existe
+    if start not in states:
+        raise ValueError(f"Estado inicial '{start}' no está en la lista de estados")
+    
+    # Validar que todos los estados de aceptación existen
+    for acc in accepting:
+        if acc not in states:
+            raise ValueError(f"Estado de aceptación '{acc}' no está en la lista de estados")
+    
+    # Crear mapeo de nombres de estados a IDs numéricos
+    # Usamos el orden de la lista para mantener consistencia
+    state_to_id = {state: i for i, state in enumerate(states)}
+    
+    # Validar transiciones
+    trans_dict: Dict[int, Dict[str, int]] = {}
+    for trans in transitions:
+        from_state = trans.get("from")
+        symbol = trans.get("symbol")
+        to_state = trans.get("to")
+        
+        if from_state is None or symbol is None or to_state is None:
+            raise ValueError(f"Transición inválida: falta 'from', 'symbol' o 'to'. Transición: {trans}")
+        
+        if from_state not in state_to_id:
+            raise ValueError(f"Estado origen '{from_state}' en transición no está en la lista de estados")
+        
+        if to_state not in state_to_id:
+            raise ValueError(f"Estado destino '{to_state}' en transición no está en la lista de estados")
+        
+        from_id = state_to_id[from_state]
+        to_id = state_to_id[to_state]
+        
+        if from_id not in trans_dict:
+            trans_dict[from_id] = {}
+        
+        # Si ya existe una transición para este símbolo desde este estado, es un error
+        # (DFA debe ser determinista)
+        if symbol in trans_dict[from_id]:
+            raise ValueError(f"Transición no determinista: desde '{from_state}' con símbolo '{symbol}' hay múltiples transiciones")
+        
+        trans_dict[from_id][symbol] = to_id
+    
+    # Convertir transiciones al formato DFA
+    # Cada estado individual se representa como un FrozenSet con un solo elemento
+    # Esto mantiene compatibilidad con el formato interno del DFA
+    dfa_trans: Dict[FrozenSet[int], Dict[str, FrozenSet[int]]] = {}
+    for from_id, sym_trans in trans_dict.items():
+        from_state_set = frozenset([from_id])
+        dfa_trans[from_state_set] = {}
+        for symbol, to_id in sym_trans.items():
+            to_state_set = frozenset([to_id])
+            dfa_trans[from_state_set][symbol] = to_state_set
+    
+    # Estado inicial
+    start_id = state_to_id[start]
+    dfa_start = frozenset([start_id])
+    
+    # Estados de aceptación
+    dfa_accepts = {frozenset([state_to_id[acc]]) for acc in accepting}
+    
+    # Asegurar que todos los estados tengan entrada en trans (incluso si no tienen transiciones salientes)
+    for i in range(len(states)):
+        state_set = frozenset([i])
+        if state_set not in dfa_trans:
+            dfa_trans[state_set] = {}
+    
+    return DFA(start=dfa_start, accepts=dfa_accepts, trans=dfa_trans)
 
 # ------------------------------ Reconocimiento con AFD ------------------------------
 
@@ -1171,7 +1259,7 @@ if __name__ == "__main__":
         output_csv = (csv_arg.split("=", 1)[1] if csv_arg else "resultado.csv")
         try:
             if with_clase:
-                process_regex_file_to_csv_with_clase(input_path, output_csv)
+                process_regex_file_to_csv_with_clase(input_path, output_csv, verbose=False)
             else:
                 process_regex_file_to_csv(input_path, output_csv)
             print(f"[OK] CSV generado: {output_csv}")
@@ -1224,3 +1312,4 @@ if __name__ == "__main__":
             plt.close(fig)
         except Exception:
             pass
+

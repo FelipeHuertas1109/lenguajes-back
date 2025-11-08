@@ -169,6 +169,308 @@ curl -X POST http://localhost:8000/api/regex-to-dfa/ \
 - `a?b` - Opcionalmente 'a' seguida de 'b'
 - `a\.b` - Literal 'a.b' (el punto está escapado)
 
+### Endpoint: Construir DFA desde Transiciones
+
+**URL:** `/api/transitions-to-dfa/`
+
+**Métodos:** `POST`
+
+Este endpoint construye un DFA desde una especificación de transiciones y devuelve la información completa del DFA en el mismo formato que el endpoint `regex-to-dfa`. Útil cuando ya tienes las transiciones del DFA y quieres obtener la representación estructurada, validar el DFA, o probar cadenas.
+
+#### Uso
+
+**POST Request con curl:**
+```bash
+curl -X POST http://localhost:8000/api/transitions-to-dfa/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "states": ["S0", "S1", "S2"],
+    "start": "S0",
+    "accepting": ["S2"],
+    "transitions": [
+      {"from": "S0", "symbol": "a", "to": "S1"},
+      {"from": "S0", "symbol": "b", "to": "S0"},
+      {"from": "S1", "symbol": "a", "to": "S1"},
+      {"from": "S1", "symbol": "b", "to": "S2"}
+    ],
+    "test": "aab"
+  }'
+```
+
+**POST Request con prueba de cadena opcional:**
+```bash
+curl -X POST http://localhost:8000/api/transitions-to-dfa/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "states": ["S0", "S1"],
+    "start": "S0",
+    "accepting": ["S1"],
+    "transitions": [
+      {"from": "S0", "symbol": "0", "to": "S0"},
+      {"from": "S0", "symbol": "1", "to": "S1"},
+      {"from": "S1", "symbol": "0", "to": "S1"},
+      {"from": "S1", "symbol": "1", "to": "S0"}
+    ],
+    "test": "101"
+  }'
+```
+
+#### Uso desde el Frontend (JavaScript/TypeScript)
+
+**Con fetch:**
+```javascript
+async function buildDFAFromTransitions(states, start, accepting, transitions, testString = null) {
+  try {
+    const response = await fetch('http://localhost:8000/api/transitions-to-dfa/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        states: states,
+        start: start,
+        accepting: accepting,
+        transitions: transitions,
+        test: testString
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Error al construir el DFA');
+    }
+
+    const data = await response.json();
+    console.log('DFA construido:', data.dfa);
+    if (data.test_result) {
+      console.log('Resultado de prueba:', data.test_result);
+    }
+    return data;
+  } catch (error) {
+    console.error('Error:', error);
+    throw error;
+  }
+}
+
+// Ejemplo de uso
+buildDFAFromTransitions(
+  ["S0", "S1", "S2"],
+  "S0",
+  ["S2"],
+  [
+    {"from": "S0", "symbol": "a", "to": "S1"},
+    {"from": "S1", "symbol": "b", "to": "S2"}
+  ],
+  "ab"
+);
+```
+
+**Con axios (TypeScript):**
+```typescript
+import axios from 'axios';
+
+interface Transition {
+  from: string;
+  symbol: string;
+  to: string;
+}
+
+interface DFAResponse {
+  success: boolean;
+  dfa: {
+    alphabet: string[];
+    states: string[];
+    start: string;
+    accepting: string[];
+    transitions: Transition[];
+  };
+  test_result: {
+    string: string;
+    accepted: boolean;
+  } | null;
+  error: string | null;
+}
+
+async function buildDFAFromTransitions(
+  states: string[],
+  start: string,
+  accepting: string[],
+  transitions: Transition[],
+  testString?: string
+): Promise<DFAResponse> {
+  try {
+    const response = await axios.post<DFAResponse>('http://localhost:8000/api/transitions-to-dfa/', {
+      states,
+      start,
+      accepting,
+      transitions,
+      test: testString
+    });
+    return response.data;
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response) {
+      throw new Error(error.response.data.error || 'Error al construir el DFA');
+    }
+    throw error;
+  }
+}
+```
+
+**Ejemplo con React:**
+```jsx
+import React, { useState } from 'react';
+
+function DFABuilder() {
+  const [dfa, setDfa] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleBuildDFA = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch('http://localhost:8000/api/transitions-to-dfa/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          states: ["S0", "S1", "S2"],
+          start: "S0",
+          accepting: ["S2"],
+          transitions: [
+            {"from": "S0", "symbol": "a", "to": "S1"},
+            {"from": "S1", "symbol": "b", "to": "S2"}
+          ],
+          test: "ab"
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error);
+      }
+
+      const data = await response.json();
+      setDfa(data.dfa);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      <button onClick={handleBuildDFA} disabled={loading}>
+        {loading ? 'Construyendo DFA...' : 'Construir DFA'}
+      </button>
+      {error && <p style={{color: 'red'}}>Error: {error}</p>}
+      {dfa && (
+        <div>
+          <h3>DFA Construido</h3>
+          <p>Alfabeto: {dfa.alphabet.join(', ')}</p>
+          <p>Estados: {dfa.states.join(', ')}</p>
+          <p>Estado inicial: {dfa.start}</p>
+          <p>Estados de aceptación: {dfa.accepting.join(', ')}</p>
+          <h4>Transiciones:</h4>
+          <ul>
+            {dfa.transitions.map((t, i) => (
+              <li key={i}>{t.from} --{t.symbol}--> {t.to}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+#### Request Body
+
+```json
+{
+  "states": ["S0", "S1", "S2"],           // Lista de nombres de estados (requerido)
+  "start": "S0",                          // Estado inicial (requerido)
+  "accepting": ["S2"],                    // Lista de estados de aceptación (requerido, puede ser [])
+  "transitions": [                        // Lista de transiciones (requerido)
+    {
+      "from": "S0",                       // Estado origen (requerido)
+      "symbol": "a",                      // Símbolo de la transición (requerido)
+      "to": "S1"                          // Estado destino (requerido)
+    }
+  ],
+  "test": "aab"                           // Cadena opcional para probar el DFA
+}
+```
+
+#### Respuesta
+
+**Éxito (200 OK):**
+```json
+{
+  "success": true,
+  "dfa": {
+    "alphabet": ["a", "b"],
+    "states": ["S0", "S1", "S2"],
+    "start": "S0",
+    "accepting": ["S2"],
+    "transitions": [
+      {"from": "S0", "symbol": "a", "to": "S1"},
+      {"from": "S0", "symbol": "b", "to": "S0"},
+      {"from": "S1", "symbol": "a", "to": "S1"},
+      {"from": "S1", "symbol": "b", "to": "S2"}
+    ]
+  },
+  "test_result": {
+    "string": "aab",
+    "accepted": true
+  },
+  "error": null
+}
+```
+
+**Error (400 Bad Request):**
+```json
+{
+  "success": false,
+  "dfa": null,
+  "test_result": null,
+  "error": "Estado inicial 'S5' no está en la lista de estados"
+}
+```
+
+#### Validaciones
+
+El endpoint valida:
+
+1. **Parámetros requeridos**: `states`, `start`, `accepting`, `transitions` deben estar presentes
+2. **Estado inicial**: El estado inicial debe existir en la lista de estados
+3. **Estados de aceptación**: Todos los estados de aceptación deben existir en la lista de estados
+4. **Transiciones válidas**: 
+   - Cada transición debe tener `from`, `symbol`, y `to`
+   - Los estados `from` y `to` deben existir en la lista de estados
+   - El DFA debe ser determinista (no puede haber múltiples transiciones desde el mismo estado con el mismo símbolo)
+5. **Formato JSON**: El cuerpo de la petición debe ser un JSON válido
+
+#### Errores Comunes
+
+- **`"Parámetro 'states' requerido"`**: Falta la lista de estados
+- **`"Estado inicial 'X' no está en la lista de estados"`**: El estado inicial no existe en `states`
+- **`"Estado de aceptación 'X' no está en la lista de estados"`**: Un estado de aceptación no existe en `states`
+- **`"Transición no determinista: desde 'S0' con símbolo 'a' hay múltiples transiciones"`**: El DFA no es determinista (hay múltiples transiciones desde el mismo estado con el mismo símbolo)
+- **`"Transición inválida: falta 'from', 'symbol' o 'to'"`**: Una transición no tiene todos los campos requeridos
+- **`"Estado origen 'X' en transición no está en la lista de estados"`**: Un estado origen en una transición no existe
+
+#### Notas Importantes
+
+- El DFA debe ser **determinista**: no puede haber múltiples transiciones desde el mismo estado con el mismo símbolo
+- Los nombres de estados pueden ser cualquier string (ej: "S0", "q0", "estado1", etc.)
+- Los símbolos del alfabeto pueden ser cualquier string (ej: "a", "0", "ε", etc.)
+- El campo `test` es opcional: si se proporciona, el DFA probará la cadena y devolverá el resultado en `test_result`
+- El formato de respuesta es idéntico al endpoint `regex-to-dfa`, facilitando la interoperabilidad
+
 ### Endpoint: Descargar DFA en formato JFLAP
 
 **URL:** `/api/regex-to-dfa/jff/`

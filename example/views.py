@@ -19,7 +19,8 @@ from example.thompson_nfa import (
     get_dfa_states,
     dfa_accepts,
     dfa_to_jff_string,
-    process_regex_file_to_csv_with_clase
+    process_regex_file_to_csv_with_clase,
+    transitions_to_dfa
 )
 
 
@@ -276,6 +277,211 @@ def regex_to_dfa(request):
 
 
 @csrf_exempt
+@require_http_methods(["POST"])
+def transitions_to_dfa_endpoint(request):
+    """
+    Endpoint que construye un DFA desde transiciones y devuelve la información del DFA.
+    
+    Parámetros (POST):
+    {
+        "states": ["S0", "S1", "S2"],           // Lista de estados
+        "start": "S0",                          // Estado inicial
+        "accepting": ["S2"],                    // Estados de aceptación
+        "transitions": [                        // Lista de transiciones
+            {"from": "S0", "symbol": "a", "to": "S1"},
+            {"from": "S1", "symbol": "b", "to": "S2"},
+            {"from": "S0", "symbol": "b", "to": "S0"}
+        ],
+        "test": "ab"                            // (Opcional) Cadena para probar
+    }
+    
+    Retorna JSON con:
+    {
+        "success": true/false,
+        "dfa": {
+            "alphabet": [...],
+            "states": [...],
+            "start": "S0",
+            "accepting": [...],
+            "transitions": [...]
+        },
+        "test_result": null o {"string": "...", "accepted": true/false},
+        "error": null o "mensaje de error"
+    }
+    """
+    # ========== LOGS DE ENTRADA ==========
+    print("=" * 80)
+    print(f"[TRANSITIONS_TO_DFA] Petición recibida - {datetime.now()}")
+    print(f"[TRANSITIONS_TO_DFA] Método HTTP: {request.method}")
+    print(f"[TRANSITIONS_TO_DFA] IP Cliente: {request.META.get('REMOTE_ADDR', 'Unknown')}")
+    print(f"[TRANSITIONS_TO_DFA] User-Agent: {request.META.get('HTTP_USER_AGENT', 'Unknown')}")
+    print(f"[TRANSITIONS_TO_DFA] Origin: {request.META.get('HTTP_ORIGIN', 'None')}")
+    print(f"[TRANSITIONS_TO_DFA] Path: {request.path}")
+    sys.stdout.flush()
+    
+    # Solo aceptar POST
+    if request.method != "POST":
+        print("[TRANSITIONS_TO_DFA] ERROR - Método no permitido. Solo POST está permitido.")
+        sys.stdout.flush()
+        return JsonResponse({
+            "success": False,
+            "error": "Método no permitido. Use POST."
+        }, status=405)
+    
+    # Parsear JSON del cuerpo
+    try:
+        body_str = request.body.decode('utf-8') if request.body else '{}'
+        print(f"[TRANSITIONS_TO_DFA] POST Body (raw): {body_str[:500]}...")  # Primeros 500 chars
+        sys.stdout.flush()
+        
+        data = json.loads(body_str)
+        states = data.get("states")
+        start = data.get("start")
+        accepting = data.get("accepting")
+        transitions = data.get("transitions")
+        test_string = data.get("test")
+        
+        print(f"[TRANSITIONS_TO_DFA] POST - states={states}, start={start}, accepting={accepting}, transitions_count={len(transitions) if transitions else 0}, test={test_string}")
+        sys.stdout.flush()
+    except json.JSONDecodeError as e:
+        print(f"[TRANSITIONS_TO_DFA] ERROR - JSON inválido: {e}")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "error": "JSON inválido en el cuerpo de la petición"
+        }
+        print("[TRANSITIONS_TO_DFA] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[TRANSITIONS_TO_DFA] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=400)
+    
+    # Validar parámetros requeridos
+    if not states:
+        print("[TRANSITIONS_TO_DFA] ERROR - Parámetro 'states' faltante")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "error": "Parámetro 'states' requerido (lista de estados)"
+        }
+        return JsonResponse(error_response, status=400)
+    
+    if not start:
+        print("[TRANSITIONS_TO_DFA] ERROR - Parámetro 'start' faltante")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "error": "Parámetro 'start' requerido (estado inicial)"
+        }
+        return JsonResponse(error_response, status=400)
+    
+    if accepting is None:
+        print("[TRANSITIONS_TO_DFA] ERROR - Parámetro 'accepting' faltante")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "error": "Parámetro 'accepting' requerido (lista de estados de aceptación, puede ser [])"
+        }
+        return JsonResponse(error_response, status=400)
+    
+    if not transitions:
+        print("[TRANSITIONS_TO_DFA] ERROR - Parámetro 'transitions' faltante")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "error": "Parámetro 'transitions' requerido (lista de transiciones)"
+        }
+        return JsonResponse(error_response, status=400)
+    
+    try:
+        print(f"[TRANSITIONS_TO_DFA] Iniciando construcción de DFA desde transiciones")
+        sys.stdout.flush()
+        
+        # Construir DFA desde transiciones
+        print("[TRANSITIONS_TO_DFA] Construyendo DFA desde transiciones...")
+        sys.stdout.flush()
+        dfa = transitions_to_dfa(states, start, accepting, transitions)
+        print(f"[TRANSITIONS_TO_DFA] DFA construido - Estados: {len(dfa.trans)}, Aceptación: {len(dfa.accepts)}")
+        sys.stdout.flush()
+        
+        # Convertir DFA a JSON
+        print("[TRANSITIONS_TO_DFA] Convirtiendo DFA a formato JSON...")
+        sys.stdout.flush()
+        dfa_json = dfa_to_json(dfa)
+        
+        # Probar cadena si se proporcionó
+        test_result = None
+        if test_string is not None:
+            print(f"[TRANSITIONS_TO_DFA] Probando cadena: {repr(test_string)}")
+            sys.stdout.flush()
+            accepted = dfa_accepts(dfa, test_string)
+            test_result = {
+                "string": test_string,
+                "accepted": accepted
+            }
+            print(f"[TRANSITIONS_TO_DFA] Resultado de prueba: {'ACEPTADA' if accepted else 'RECHAZADA'}")
+            sys.stdout.flush()
+        
+        # Construir respuesta exitosa
+        response_data = {
+            "success": True,
+            "dfa": dfa_json,
+            "test_result": test_result,
+            "error": None
+        }
+        
+        print("[TRANSITIONS_TO_DFA] --- RESPUESTA ---")
+        print(json.dumps(response_data, ensure_ascii=False, indent=2)[:1000] + "...")
+        print("[TRANSITIONS_TO_DFA] --- FIN RESPUESTA ---")
+        print("[TRANSITIONS_TO_DFA] ÉXITO - DFA construido correctamente")
+        print("=" * 80)
+        sys.stdout.flush()
+        
+        return JsonResponse(response_data)
+    
+    except ValueError as e:
+        # Errores de validación
+        print(f"[TRANSITIONS_TO_DFA] ERROR - Error de validación: {e}")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "dfa": None,
+            "test_result": None,
+            "error": str(e)
+        }
+        print("[TRANSITIONS_TO_DFA] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[TRANSITIONS_TO_DFA] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=400)
+    
+    except Exception as e:
+        import traceback
+        print(f"[TRANSITIONS_TO_DFA] ERROR - Excepción capturada:")
+        print(f"[TRANSITIONS_TO_DFA] Tipo: {type(e).__name__}")
+        print(f"[TRANSITIONS_TO_DFA] Mensaje: {str(e)}")
+        print(f"[TRANSITIONS_TO_DFA] Traceback:")
+        traceback.print_exc()
+        sys.stdout.flush()
+        
+        error_response = {
+            "success": False,
+            "dfa": None,
+            "test_result": None,
+            "error": str(e)
+        }
+        print("[TRANSITIONS_TO_DFA] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[TRANSITIONS_TO_DFA] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        
+        return JsonResponse(error_response, status=500)
+
+
+@csrf_exempt
 @require_http_methods(["GET", "POST"])
 def regex_to_dfa_jff(request):
     """
@@ -472,8 +678,9 @@ def regex_file_to_csv(request):
         print(f"[REGEX_FILE_TO_CSV] Procesando archivo...")
         sys.stdout.flush()
         
-        # Procesar el archivo (la función ahora tiene prints de progreso internos)
-        process_regex_file_to_csv_with_clase(temp_input_path, temp_output_path)
+        # OPTIMIZACIÓN: Procesar en paralelo con verbose=False para mejor rendimiento
+        # La función ahora procesa en paralelo automáticamente
+        process_regex_file_to_csv_with_clase(temp_input_path, temp_output_path, verbose=False)
         
         print(f"[REGEX_FILE_TO_CSV] Archivo procesado exitosamente")
         print(f"[REGEX_FILE_TO_CSV] Archivo de salida: {temp_output_path}")
