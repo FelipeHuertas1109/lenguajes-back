@@ -14,8 +14,9 @@ import random
 import itertools
 import time
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from functools import partial
+import threading
 
 EPSILON = "ε"
 
@@ -462,10 +463,52 @@ def dfa_accepting_aliases(dfa: DFA, aliases_cache: Tuple[Dict[FrozenSet[int], st
 
 # ------------------------------ Generación de cadenas de prueba ------------------------------
 
-def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 50, max_length: int = 20, max_attempts: int = 10000, verbose: bool = False) -> Dict[str, bool]:
+def _test_string_worker(test_strings: List[str], dfa: DFA, accepted_set: set, rejected_set: set, 
+                        num_accepted: int, num_rejected: int, lock: threading.Lock = None) -> None:
+    """Worker thread para probar cadenas en paralelo."""
+    for test_str in test_strings:
+        # Verificar si ya tenemos suficientes
+        if lock:
+            with lock:
+                if len(accepted_set) >= num_accepted and len(rejected_set) >= num_rejected:
+                    break
+                # Skip si ya está en los sets
+                if test_str in accepted_set or test_str in rejected_set:
+                    continue
+        else:
+            # Sin lock (proceso secuencial)
+            if len(accepted_set) >= num_accepted and len(rejected_set) >= num_rejected:
+                break
+            if test_str in accepted_set or test_str in rejected_set:
+                continue
+        
+        try:
+            is_accepted = dfa_accepts(dfa, test_str)
+            if lock:
+                with lock:
+                    if is_accepted and len(accepted_set) < num_accepted:
+                        if test_str not in accepted_set:
+                            accepted_set.add(test_str)
+                    elif not is_accepted and len(rejected_set) < num_rejected:
+                        if test_str not in rejected_set:
+                            rejected_set.add(test_str)
+            else:
+                # Sin lock (proceso secuencial)
+                if is_accepted and len(accepted_set) < num_accepted:
+                    if test_str not in accepted_set:
+                        accepted_set.add(test_str)
+                elif not is_accepted and len(rejected_set) < num_rejected:
+                    if test_str not in rejected_set:
+                        rejected_set.add(test_str)
+        except Exception:
+            continue
+
+
+def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 50, max_length: int = 20, max_attempts: int = 10000, verbose: bool = False, use_threading: bool = True) -> Dict[str, bool]:
     """
     Genera un diccionario con cadenas de prueba y si son aceptadas o no.
     Versión optimizada con sets para búsquedas rápidas y algoritmo mejorado.
+    OPTIMIZACIÓN: Usa threading para paralelizar la prueba de cadenas.
     
     Args:
         dfa: El DFA para probar las cadenas
@@ -474,6 +517,7 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
         max_length: Longitud máxima de las cadenas a generar (default: 20)
         max_attempts: Número máximo de intentos para encontrar las cadenas necesarias (default: 10000)
         verbose: Si es True, imprime el progreso (default: False)
+        use_threading: Si es True, usa threading para paralelizar (default: True)
     
     Returns:
         Dict[str, bool]: Diccionario con cadenas como llaves y True/False como valores
@@ -496,8 +540,10 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
         sys.stdout.flush()
     
     # OPTIMIZACIÓN: Usar sets en lugar de listas para búsquedas O(1)
+    # Usar locks para thread-safety cuando use_threading=True
     accepted_strings_set = set()
     rejected_strings_set = set()
+    lock = threading.Lock() if use_threading else None
     
     # Estrategia 1: Generar cadenas sistemáticamente por longitud
     if verbose:
@@ -532,23 +578,47 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
             # Para longitudes mayores, solo muestrear
             test_strings = [''.join(random.choices(alphabet, k=length)) for _ in range(300)]
         
-        # OPTIMIZACIÓN: Probar cadenas directamente sin shuffle innecesario
-        for test_str in test_strings:
-            if len(accepted_strings_set) >= num_accepted and len(rejected_strings_set) >= num_rejected:
-                break
+        # OPTIMIZACIÓN: Probar cadenas en paralelo usando threads
+        if use_threading and len(test_strings) > 10:
+            # Dividir las cadenas en chunks para procesamiento paralelo
+            num_threads = min(4, len(test_strings) // 10)  # Máximo 4 threads por batch
+            if num_threads > 1:
+                chunk_size = max(1, len(test_strings) // num_threads)
+                threads = []
+                
+                for i in range(0, len(test_strings), chunk_size):
+                    chunk = test_strings[i:i + chunk_size]
+                    thread = threading.Thread(
+                        target=_test_string_worker,
+                        args=(chunk, dfa, accepted_strings_set, rejected_strings_set, num_accepted, num_rejected, lock)
+                    )
+                    threads.append(thread)
+                    thread.start()
+                
+                # Esperar a que todos los threads terminen
+                for thread in threads:
+                    thread.join()
+            else:
+                # Si solo hay 1 thread, procesar secuencialmente
+                _test_string_worker(test_strings, dfa, accepted_strings_set, rejected_strings_set, num_accepted, num_rejected, lock)
+        else:
+            # Proceso secuencial (sin threading)
+            for test_str in test_strings:
+                if len(accepted_strings_set) >= num_accepted and len(rejected_strings_set) >= num_rejected:
+                    break
             
-            # OPTIMIZACIÓN: Evitar probar cadenas ya probadas
-            if test_str in accepted_strings_set or test_str in rejected_strings_set:
-                continue
-            
-            try:
-                is_accepted = dfa_accepts(dfa, test_str)
-                if is_accepted and len(accepted_strings_set) < num_accepted:
-                    accepted_strings_set.add(test_str)
-                elif not is_accepted and len(rejected_strings_set) < num_rejected:
-                    rejected_strings_set.add(test_str)
-            except Exception:
-                continue
+                # OPTIMIZACIÓN: Evitar probar cadenas ya probadas
+                if test_str in accepted_strings_set or test_str in rejected_strings_set:
+                    continue
+                
+                try:
+                    is_accepted = dfa_accepts(dfa, test_str)
+                    if is_accepted and len(accepted_strings_set) < num_accepted:
+                        accepted_strings_set.add(test_str)
+                    elif not is_accepted and len(rejected_strings_set) < num_rejected:
+                        rejected_strings_set.add(test_str)
+                except Exception:
+                    continue
     
     strategy1_time = time.time() - strategy1_start
     if verbose:
@@ -567,28 +637,91 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
         remaining_needed = (num_accepted - len(accepted_strings_set)) + (num_rejected - len(rejected_strings_set))
         adjusted_max_attempts = min(max_attempts, remaining_needed * 200)  # Menos intentos si ya tenemos muchas
         
+        # OPTIMIZACIÓN: Generar cadenas en batch y probarlas en paralelo
+        batch_size = 100 if use_threading else 1
+        generated_batch = []
+        
         while (len(accepted_strings_set) < num_accepted or len(rejected_strings_set) < num_rejected) and attempts < adjusted_max_attempts:
-            attempts += 1
+            # Generar un batch de cadenas
+            if len(generated_batch) < batch_size:
+                length = random.randint(0, min(max_length, 15))
+                test_str = ''.join(random.choices(alphabet, k=length))
+                generated_batch.append(test_str)
+                attempts += 1
+                continue
+            
+            # Probar el batch
+            if use_threading and len(generated_batch) > 10:
+                # Probar en paralelo
+                num_threads = min(4, len(generated_batch) // 10)
+                chunk_size = max(1, len(generated_batch) // num_threads)
+                threads = []
+                
+                for i in range(0, len(generated_batch), chunk_size):
+                    chunk = generated_batch[i:i + chunk_size]
+                    thread = threading.Thread(
+                        target=_test_string_worker,
+                        args=(chunk, dfa, accepted_strings_set, rejected_strings_set, num_accepted, num_rejected, lock)
+                    )
+                    threads.append(thread)
+                    thread.start()
+                
+                for thread in threads:
+                    thread.join()
+            else:
+                # Probar secuencialmente
+                for test_str in generated_batch:
+                    if len(accepted_strings_set) >= num_accepted and len(rejected_strings_set) >= num_rejected:
+                        break
+                    if test_str in accepted_strings_set or test_str in rejected_strings_set:
+                        continue
+                    try:
+                        is_accepted = dfa_accepts(dfa, test_str)
+                        if is_accepted and len(accepted_strings_set) < num_accepted:
+                            accepted_strings_set.add(test_str)
+                        elif not is_accepted and len(rejected_strings_set) < num_rejected:
+                            rejected_strings_set.add(test_str)
+                    except Exception:
+                        continue
+            
             if verbose and attempts - last_print >= 1000:
                 print(f"    [GENERATE_TEST_STRINGS] Intentos: {attempts}/{adjusted_max_attempts} - Aceptadas: {len(accepted_strings_set)}/{num_accepted}, Rechazadas: {len(rejected_strings_set)}/{num_rejected}")
                 last_print = attempts
                 sys.stdout.flush()
-            # OPTIMIZACIÓN: Generar longitudes más variadas pero limitadas
-            length = random.randint(0, min(max_length, 15))
-            test_str = ''.join(random.choices(alphabet, k=length))
             
-            # OPTIMIZACIÓN: Skip si ya está en los sets
-            if test_str in accepted_strings_set or test_str in rejected_strings_set:
-                continue
-            
-            try:
-                is_accepted = dfa_accepts(dfa, test_str)
-                if is_accepted and len(accepted_strings_set) < num_accepted:
-                    accepted_strings_set.add(test_str)
-                elif not is_accepted and len(rejected_strings_set) < num_rejected:
-                    rejected_strings_set.add(test_str)
-            except Exception:
-                continue
+            generated_batch = []
+        
+        # Probar cualquier batch restante
+        if generated_batch:
+            if use_threading and len(generated_batch) > 10:
+                num_threads = min(4, len(generated_batch) // 10)
+                chunk_size = max(1, len(generated_batch) // num_threads)
+                threads = []
+                
+                for i in range(0, len(generated_batch), chunk_size):
+                    chunk = generated_batch[i:i + chunk_size]
+                    thread = threading.Thread(
+                        target=_test_string_worker,
+                        args=(chunk, dfa, accepted_strings_set, rejected_strings_set, num_accepted, num_rejected, lock)
+                    )
+                    threads.append(thread)
+                    thread.start()
+                
+                for thread in threads:
+                    thread.join()
+            else:
+                for test_str in generated_batch:
+                    if test_str in accepted_strings_set or test_str in rejected_strings_set:
+                        continue
+                    try:
+                        is_accepted = dfa_accepts(dfa, test_str)
+                        if is_accepted and len(accepted_strings_set) < num_accepted:
+                            accepted_strings_set.add(test_str)
+                        elif not is_accepted and len(rejected_strings_set) < num_rejected:
+                            rejected_strings_set.add(test_str)
+                    except Exception:
+                        continue
+        
         strategy2_time = time.time() - strategy2_start
         if verbose:
             print(f"    [GENERATE_TEST_STRINGS] Estrategia 2 completada en {strategy2_time:.2f}s después de {attempts} intentos")
@@ -882,10 +1015,14 @@ def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str, max_w
     process_start_time = time.time()
     
     # Determinar número de workers
+    # OPTIMIZACIÓN: Aumentar workers según el sistema y carga
     if max_workers is None:
-        max_workers = min(os.cpu_count() or 4, 8)  # Máximo 8 workers para evitar sobrecarga
+        cpu_count = os.cpu_count() or 4
+        # Para operaciones CPU-intensivas, usar más workers
+        # Limitar a 16 para evitar sobrecarga de contexto switching
+        max_workers = min(cpu_count * 2, 16)
     
-    print(f"[PROCESS_CSV] Usando {max_workers} workers en paralelo")
+    print(f"[PROCESS_CSV] Usando {max_workers} workers en paralelo (CPUs: {os.cpu_count() or 4})")
     sys.stdout.flush()
     
     in_path = Path(input_path)
@@ -951,12 +1088,12 @@ def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str, max_w
                 # Si process_single_regex lanzó una excepción no manejada, crear fila con error
                 import traceback
                 rows_dict[lineno] = {
-                    "Regex": rx,
-                    "Alfabeto": "",
-                    "Estados de aceptación": "",
-                    "Estados": "",
-                    "Transiciones": "",
-                    "Clase": "",
+                "Regex": rx,
+                "Alfabeto": "",
+                "Estados de aceptación": "",
+                "Estados": "",
+                "Transiciones": "",
+                "Clase": "",
                     "Error": f"Error inesperado al procesar: {type(e).__name__}: {e}"
                 }
                 if verbose:
@@ -979,21 +1116,30 @@ def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str, max_w
                 sys.stdout.flush()
                 last_progress_print = processed_count
     
-    # OPTIMIZACIÓN: Escribir todas las filas al CSV en orden
+    # OPTIMIZACIÓN: Escribir todas las filas al CSV en orden con buffering mejorado
     write_start = time.time()
     print(f"[PROCESS_CSV] Escribiendo {total_regexes} filas al CSV...")
     sys.stdout.flush()
     
-    with open(output_csv, "w", newline="", encoding="utf-8") as f_out:
+    # OPTIMIZACIÓN: Usar buffering más grande para escritura más rápida
+    with open(output_csv, "w", newline="", encoding="utf-8", buffering=8192*4) as f_out:
         writer = csv.DictWriter(
             f_out,
             fieldnames=["Regex", "Alfabeto", "Estados de aceptación", "Estados", "Transiciones", "Clase", "Error"]
         )
         writer.writeheader()
         
-        # Escribir filas en orden de línea
-        for lineno in sorted(rows_dict.keys()):
-            writer.writerow(rows_dict[lineno])
+        # OPTIMIZACIÓN: Escribir filas en orden, agrupadas en batches para mejor rendimiento
+        sorted_linenos = sorted(rows_dict.keys())
+        batch_size = 100  # Escribir en batches de 100 filas
+        
+        for i in range(0, len(sorted_linenos), batch_size):
+            batch = sorted_linenos[i:i + batch_size]
+            for lineno in batch:
+                writer.writerow(rows_dict[lineno])
+            # Forzar flush periódico para progreso visible
+            if (i // batch_size) % 10 == 0:
+                f_out.flush()
     
     write_time = time.time() - write_start
     process_total_time = time.time() - process_start_time
