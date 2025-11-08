@@ -581,6 +581,8 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
         # OPTIMIZACIÓN: Probar cadenas en paralelo usando threads
         if use_threading and len(test_strings) > 10:
             # Dividir las cadenas en chunks para procesamiento paralelo
+            # Para sistemas con 4 núcleos/8 hilos, usar 2-4 threads por batch es óptimo
+            # (ya estamos paralelizando a nivel de regex con ThreadPoolExecutor)
             num_threads = min(4, len(test_strings) // 10)  # Máximo 4 threads por batch
             if num_threads > 1:
                 chunk_size = max(1, len(test_strings) // num_threads)
@@ -1015,14 +1017,26 @@ def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str, max_w
     process_start_time = time.time()
     
     # Determinar número de workers
-    # OPTIMIZACIÓN: Aumentar workers según el sistema y carga
+    # OPTIMIZACIÓN: Ajustar workers según el sistema
+    # Para sistemas con hyperthreading (4 núcleos físicos = 8 hilos lógicos)
     if max_workers is None:
         cpu_count = os.cpu_count() or 4
-        # Para operaciones CPU-intensivas, usar más workers
-        # Limitar a 16 para evitar sobrecarga de contexto switching
-        max_workers = min(cpu_count * 2, 16)
+        # Para operaciones CPU-intensivas con I/O (generación de strings, escritura CSV):
+        # - Python tiene GIL, pero I/O y algunos operaciones liberan el GIL
+        # - Para 4 núcleos físicos / 8 hilos: usar 8-10 workers es óptimo
+        #   Esto aprovecha los hilos lógicos mientras evita sobrecarga
+        if cpu_count >= 8:
+            # Sistema con hyperthreading detectado (típicamente 8 hilos = 4 núcleos)
+            # Usar número de hilos lógicos (8) o ligeramente más (9-10) para I/O
+            max_workers = min(int(cpu_count * 1.1), 10)  # 8 * 1.1 = 8.8 -> 8-9 workers
+        elif cpu_count >= 4:
+            # Sistema con 4-7 cores, usar ~1.5x núcleos
+            max_workers = min(int(cpu_count * 1.5), 8)
+        else:
+            # Sistema con pocos cores, usar 2x núcleos
+            max_workers = min(cpu_count * 2, 6)
     
-    print(f"[PROCESS_CSV] Usando {max_workers} workers en paralelo (CPUs: {os.cpu_count() or 4})")
+    print(f"[PROCESS_CSV] Usando {max_workers} workers en paralelo (CPUs detectados: {cpu_count})")
     sys.stdout.flush()
     
     in_path = Path(input_path)
