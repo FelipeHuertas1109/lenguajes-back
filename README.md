@@ -795,7 +795,7 @@ El nombre del archivo se genera automáticamente desde la expresión regular:
 
 **Métodos:** `POST`
 
-Este endpoint recibe un archivo de texto (`.txt`) o CSV (`.csv`) con expresiones regulares (una por línea) y genera un archivo CSV con toda la información del DFA más una columna adicional llamada "Clase" que contiene un diccionario JSON con 100 cadenas de prueba (50 aceptadas y 50 rechazadas) y sus valores booleanos.
+Este endpoint recibe un archivo de texto (`.txt`) o CSV (`.csv`) con expresiones regulares (una por línea) y genera un archivo CSV con toda la información del DFA más una columna adicional llamada "Clase" que contiene un diccionario JSON con 100 cadenas de prueba (50 aceptadas y 50 rechazadas) y sus valores booleanos. **Todas las cadenas usan únicamente símbolos del alfabeto del DFA.**
 
 #### Uso
 
@@ -901,6 +901,8 @@ La columna "Clase" contiene un diccionario JSON con exactamente 100 cadenas de p
 - **50 cadenas aceptadas**: Cadenas que son aceptadas por el DFA (valor `true`)
 - **50 cadenas rechazadas**: Cadenas que son rechazadas por el DFA (valor `false`)
 
+**IMPORTANTE:** Todas las cadenas (aceptadas y rechazadas) usan **únicamente símbolos del alfabeto del DFA**. Las cadenas rechazadas son válidas sobre el alfabeto, pero el DFA las rechaza porque no llegan a un estado de aceptación.
+
 Ejemplo de contenido de la columna "Clase":
 ```json
 {
@@ -911,17 +913,21 @@ Ejemplo de contenido de la columna "Clase":
   "ab": true,
   "aaa": false,
   "aab": true,
+  "ba": false,
+  "bb": false,
+  "aba": false,
   ...
-  "__REJECTED_rej_0_45__": false,
-  "__REJECTED_rej_1_45__": false
 }
 ```
 
+En este ejemplo, todas las cadenas usan solo los símbolos `a` y `b` (el alfabeto del DFA). Las cadenas rechazadas como `"a"`, `"aa"`, `"ba"` son válidas sobre el alfabeto, pero el DFA las rechaza porque no terminan en un estado de aceptación.
+
 **Características de las cadenas generadas:**
-- Las cadenas aceptadas son generadas probando diferentes combinaciones del alfabeto
-- Las cadenas rechazadas incluyen cadenas con símbolos fuera del alfabeto (garantizadas como rechazadas)
+- Todas las cadenas (aceptadas y rechazadas) usan **únicamente símbolos del alfabeto del DFA**
+- Las cadenas aceptadas son generadas probando diferentes combinaciones del alfabeto hasta encontrar las que el DFA acepta
+- Las cadenas rechazadas son generadas probando diferentes combinaciones del alfabeto hasta encontrar las que el DFA rechaza (no terminan en un estado de aceptación)
 - Todas las cadenas son únicas en el diccionario
-- El diccionario siempre contiene exactamente 100 entradas
+- El diccionario siempre contiene exactamente 100 entradas (50 aceptadas + 50 rechazadas)
 
 **Validación de la columna Clase:**
 

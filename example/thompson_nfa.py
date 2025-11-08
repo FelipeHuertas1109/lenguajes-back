@@ -729,79 +729,39 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
             print(f"    [GENERATE_TEST_STRINGS] Estrategia 2 completada en {strategy2_time:.2f}s después de {attempts} intentos")
             sys.stdout.flush()
     
-    # Estrategia 3: Si aún no tenemos suficientes rechazadas, usar símbolos fuera del alfabeto
-    # Estas cadenas serán rechazadas porque el DFA no tiene transiciones para esos símbolos
+    # Estrategia 3: Si aún no tenemos suficientes rechazadas, generar más cadenas del alfabeto
+    # IMPORTANTE: Todas las cadenas deben usar solo símbolos del alfabeto del DFA
     if len(rejected_strings_set) < num_rejected:
         if verbose:
-            print(f"    [GENERATE_TEST_STRINGS] Estrategia 3: Generando cadenas rechazadas con símbolos fuera del alfabeto")
+            print(f"    [GENERATE_TEST_STRINGS] Estrategia 3: Generando más cadenas rechazadas (solo alfabeto)")
             sys.stdout.flush()
         strategy3_start = time.time()
-        # Generar cadenas con símbolos fuera del alfabeto
-        extra_symbols = []
-        # Buscar símbolos que no estén en el alfabeto
-        for i in range(32, 127):  # Caracteres imprimibles ASCII
-            char = chr(i)
-            if char not in alphabet:
-                extra_symbols.append(char)
-                if len(extra_symbols) >= 50:
-                    break
+        needed_rejected = num_rejected - len(rejected_strings_set)
+        attempts_rejected = 0
+        max_rejected_attempts = min(needed_rejected * 100, 5000)
         
-        # Si aún no tenemos suficientes, agregar números y caracteres especiales
-        if len(extra_symbols) < 10:
-            for char in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '@', '#', '$', '%', '^', '&', '*', '!']:
-                if char not in alphabet and char not in extra_symbols:
-                    extra_symbols.append(char)
+        while len(rejected_strings_set) < num_rejected and attempts_rejected < max_rejected_attempts:
+            attempts_rejected += 1
+            # Generar cadenas aleatorias usando solo el alfabeto
+            length = random.randint(0, min(max_length, 15))
+            test_str = ''.join(random.choices(alphabet, k=length))
+            
+            # Skip si ya está en los sets
+            if test_str in accepted_strings_set or test_str in rejected_strings_set:
+                continue
+            
+            try:
+                is_accepted = dfa_accepts(dfa, test_str)
+                if not is_accepted:
+                    # Es una cadena rechazada válida (usa solo el alfabeto)
+                    rejected_strings_set.add(test_str)
+            except Exception:
+                continue
         
-        # Generar cadenas rechazadas usando símbolos fuera del alfabeto
-        for i in range(num_rejected - len(rejected_strings_set)):
-            if extra_symbols:
-                # OPTIMIZACIÓN: Generar directamente sin verificar duplicados (son únicos por diseño)
-                if i % 3 == 0:
-                    # Cadena solo con símbolos fuera del alfabeto
-                    length = (i % 10) + 1
-                    test_str = ''.join(random.choices(extra_symbols, k=length)) + f"_{i}"
-                elif i % 3 == 1 and alphabet:
-                    # Cadena mixta: empezar con símbolo fuera del alfabeto
-                    length = (i % 10) + 2
-                    prefix = random.choice(extra_symbols)
-                    suffix = ''.join(random.choices(alphabet, k=length-1)) if length > 1 else ''
-                    test_str = prefix + suffix + f"_{i}"
-                else:
-                    # Cadena mixta: terminar con símbolo fuera del alfabeto
-                    length = (i % 10) + 2
-                    prefix = ''.join(random.choices(alphabet, k=length-1)) if alphabet and length > 1 else ''
-                    suffix = random.choice(extra_symbols)
-                    test_str = prefix + suffix + f"_{i}"
-                
-                rejected_strings_set.add(test_str)
         strategy3_time = time.time() - strategy3_start
         if verbose:
-            print(f"    [GENERATE_TEST_STRINGS] Estrategia 3 completada en {strategy3_time:.2f}s")
+            print(f"    [GENERATE_TEST_STRINGS] Estrategia 3 completada en {strategy3_time:.2f}s después de {attempts_rejected} intentos")
             sys.stdout.flush()
-    
-    # OPTIMIZACIÓN: Completar cadenas faltantes usando estrategias más eficientes
-    # Completar rechazadas primero (más rápido, garantizado con símbolos fuera del alfabeto)
-    if len(rejected_strings_set) < num_rejected:
-        # Obtener símbolos que no están en el alfabeto (una sola vez)
-        invalid_chars = []
-        for i in range(48, 58):  # 0-9
-            if chr(i) not in alphabet:
-                invalid_chars.append(chr(i))
-        for i in range(64, 91):  # @-Z
-            if chr(i) not in alphabet:
-                invalid_chars.append(chr(i))
-        for char in ['!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '=']:
-            if char not in alphabet and char not in invalid_chars:
-                invalid_chars.append(char)
-        
-        # Generar cadenas rechazadas faltantes
-        needed_rejected = num_rejected - len(rejected_strings_set)
-        for i in range(needed_rejected):
-            if invalid_chars:
-                char = invalid_chars[i % len(invalid_chars)]
-                length = (i % 10) + 1
-                unique_str = char * length + f"__rej_{i}__"
-                rejected_strings_set.add(unique_str)
     
     # Completar aceptadas si faltan (más complejo)
     if len(accepted_strings_set) < num_accepted:
@@ -854,30 +814,59 @@ def generate_test_strings(dfa: DFA, num_accepted: int = 50, num_rejected: int = 
     final_accepted = len([k for k, v in result.items() if v])
     final_rejected = len([k for k, v in result.items() if not v])
     
-    # Si aún faltan aceptadas, agregar cadenas únicas con identificadores
+    # Completar cadenas faltantes (solo usando símbolos del alfabeto)
+    # Si aún faltan aceptadas, generar más cadenas del alfabeto hasta encontrar aceptadas
     if final_accepted < num_accepted:
-        for i in range(num_accepted - final_accepted):
-            unique_str = f"__ACCEPTED_{i}_{final_accepted}__"
-            # Intentar probar sin el identificador si es posible
-            try:
-                clean_test = alphabet[0] * (i + 1) if alphabet else ""
-                if clean_test and clean_test not in result:
-                    if dfa_accepts(dfa, clean_test):
-                        result[clean_test] = True
-                        final_accepted += 1
-                        continue
-            except:
-                pass
-            # Si no funciona, agregar como rechazada garantizada (mejor que nada)
-            result[unique_str] = True
-            final_accepted += 1
+        needed_accepted = num_accepted - final_accepted
+        attempts = 0
+        max_completion_attempts = min(needed_accepted * 100, 5000)
+        
+        while final_accepted < num_accepted and attempts < max_completion_attempts:
+            attempts += 1
+            # Generar patrones variados usando solo el alfabeto
+            if alphabet:
+                pattern_type = attempts % 4
+                if pattern_type == 0:
+                    char = alphabet[attempts % len(alphabet)]
+                    test_str = char * ((attempts // len(alphabet)) + 1)
+                elif pattern_type == 1:
+                    char1 = alphabet[attempts % len(alphabet)]
+                    char2 = alphabet[(attempts + 1) % len(alphabet)]
+                    test_str = (char1 + char2) * ((attempts // len(alphabet)) + 1)
+                elif pattern_type == 2:
+                    test_str = ''.join(alphabet) * ((attempts // len(alphabet)) + 1)
+                else:
+                    length = (attempts % 15) + 1
+                    test_str = ''.join(random.choices(alphabet, k=length))
+                
+                if test_str not in result:
+                    try:
+                        if dfa_accepts(dfa, test_str):
+                            result[test_str] = True
+                            final_accepted += 1
+                    except Exception:
+                        pass
     
-    # Si aún faltan rechazadas, agregar cadenas únicas
+    # Si aún faltan rechazadas, generar más cadenas del alfabeto hasta encontrar rechazadas
     if final_rejected < num_rejected:
-        for i in range(num_rejected - final_rejected):
-            unique_str = f"__REJECTED_{i}_{final_rejected}__"
-            result[unique_str] = False
-            final_rejected += 1
+        needed_rejected = num_rejected - final_rejected
+        attempts = 0
+        max_completion_attempts = min(needed_rejected * 100, 5000)
+        
+        while final_rejected < num_rejected and attempts < max_completion_attempts:
+            attempts += 1
+            # Generar cadenas aleatorias usando solo el alfabeto
+            if alphabet:
+                length = random.randint(0, min(max_length, 15))
+                test_str = ''.join(random.choices(alphabet, k=length))
+                
+                if test_str not in result:
+                    try:
+                        if not dfa_accepts(dfa, test_str):
+                            result[test_str] = False
+                            final_rejected += 1
+                    except Exception:
+                        pass
     
     total_time = time.time() - start_time
     final_accepted = len([k for k, v in result.items() if v])
@@ -971,8 +960,9 @@ def process_single_regex(lineno: int, rx: str, verbose: bool = False) -> Dict[st
         row["Transiciones"] = trans
         
         # Generar cadenas de prueba y crear el diccionario "clase"
-        # OPTIMIZACIÓN: verbose=False en producción para reducir overhead
-        test_strings_dict = generate_test_strings(dfa, num_accepted=50, num_rejected=50, verbose=verbose)
+        # OPTIMIZACIÓN: Deshabilitar threading interno porque ya estamos paralelizando a nivel de regex
+        # El threading interno causa overhead (locks, GIL contention) sin beneficio real
+        test_strings_dict = generate_test_strings(dfa, num_accepted=50, num_rejected=50, verbose=verbose, use_threading=False)
         
         # Convertir el diccionario a JSON string
         json_string = json.dumps(test_strings_dict, ensure_ascii=False)
@@ -1022,19 +1012,22 @@ def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str, max_w
     if max_workers is None:
         cpu_count = os.cpu_count() or 4
         # Para operaciones CPU-intensivas con I/O (generación de strings, escritura CSV):
-        # - Python tiene GIL, pero I/O y algunos operaciones liberan el GIL
-        # - Para 4 núcleos físicos / 8 hilos: usar 8-10 workers es óptimo
-        #   Esto aprovecha los hilos lógicos mientras evita sobrecarga
+        # - Python tiene GIL, pero I/O y algunas operaciones liberan el GIL
+        # - IMPORTANTE: Threading interno está deshabilitado (usa use_threading=False)
+        #   porque ya estamos paralelizando a nivel de regex con ThreadPoolExecutor
+        # - Para 4 núcleos físicos / 8 hilos: usar más workers ayuda con I/O y operaciones que liberan GIL
         if cpu_count >= 8:
             # Sistema con hyperthreading detectado (típicamente 8 hilos = 4 núcleos)
-            # Usar número de hilos lógicos (8) o ligeramente más (9-10) para I/O
-            max_workers = min(int(cpu_count * 1.1), 10)  # 8 * 1.1 = 8.8 -> 8-9 workers
+            # Para CPU-intensivo con GIL: usar número de hilos lógicos + pequeño margen
+            # 8-9 workers es óptimo para evitar overhead de contexto switching excesivo
+            # Con GIL, más workers no ayuda mucho y añade overhead
+            max_workers = min(cpu_count + 1, 9)  # 8 + 1 = 9 workers (óptimo para 8 hilos)
         elif cpu_count >= 4:
-            # Sistema con 4-7 cores, usar ~1.5x núcleos
-            max_workers = min(int(cpu_count * 1.5), 8)
+            # Sistema con 4-7 cores, usar ~2x núcleos
+            max_workers = min(int(cpu_count * 2), 10)
         else:
-            # Sistema con pocos cores, usar 2x núcleos
-            max_workers = min(cpu_count * 2, 6)
+            # Sistema con pocos cores, usar 2-3x núcleos
+            max_workers = min(cpu_count * 3, 8)
     
     print(f"[PROCESS_CSV] Usando {max_workers} workers en paralelo (CPUs detectados: {cpu_count})")
     sys.stdout.flush()
