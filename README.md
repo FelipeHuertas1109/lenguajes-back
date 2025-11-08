@@ -91,6 +91,84 @@ urlpatterns = [
 
 This example uses the Web Server Gateway Interface (WSGI) with Django to enable handling requests on Vercel with Serverless Functions.
 
+## API Endpoint: Regex to DFA
+
+El proyecto incluye un endpoint que convierte expresiones regulares a autómatas finitos deterministas (DFA) usando el algoritmo de Thompson y la construcción de subconjuntos.
+
+### Endpoint
+
+**URL:** `/api/regex-to-dfa/`
+
+**Métodos:** `GET`, `POST`
+
+### Uso
+
+#### GET Request
+
+```bash
+# Convertir una expresión regular a DFA
+curl "http://localhost:8000/api/regex-to-dfa/?regex=a*b"
+
+# Convertir y probar una cadena
+curl "http://localhost:8000/api/regex-to-dfa/?regex=a*b&test=aaab"
+```
+
+#### POST Request
+
+```bash
+# Convertir una expresión regular
+curl -X POST http://localhost:8000/api/regex-to-dfa/ \
+  -H "Content-Type: application/json" \
+  -d '{"regex": "a*b"}'
+
+# Convertir y probar una cadena
+curl -X POST http://localhost:8000/api/regex-to-dfa/ \
+  -H "Content-Type: application/json" \
+  -d '{"regex": "a*b", "test": "aaab"}'
+```
+
+### Respuesta
+
+```json
+{
+  "success": true,
+  "regex": "a*b",
+  "dfa": {
+    "alphabet": ["a", "b"],
+    "states": ["S0", "S1", "S2"],
+    "start": "S0",
+    "accepting": ["S2"],
+    "transitions": [
+      {"from": "S0", "symbol": "a", "to": "S1"},
+      {"from": "S0", "symbol": "b", "to": "S2"},
+      {"from": "S1", "symbol": "a", "to": "S1"},
+      {"from": "S1", "symbol": "b", "to": "S2"}
+    ]
+  },
+  "test_result": {
+    "string": "aaab",
+    "accepted": true
+  },
+  "error": null
+}
+```
+
+### Características
+
+- Soporte para expresiones regulares estándar: `*`, `+`, `?`, `|`, `.`, `()`, y caracteres escapados con `\`
+- Conversión automática de Regex → NFA (Thompson) → DFA (Subconjuntos)
+- Opción de probar cadenas contra el DFA generado
+- Respuestas en formato JSON estructurado
+- Manejo de errores con mensajes descriptivos
+
+### Ejemplos de Expresiones Regulares
+
+- `a*b` - Cero o más 'a' seguidas de 'b'
+- `(a|b)*` - Cualquier combinación de 'a' y 'b'
+- `a+b` - Una o más 'a' seguidas de 'b'
+- `a?b` - Opcionalmente 'a' seguida de 'b'
+- `a\.b` - Literal 'a.b' (el punto está escapado)
+
 ## Running Locally
 
 ```bash
