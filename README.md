@@ -169,6 +169,12 @@ curl -X POST http://localhost:8000/api/regex-to-dfa/ \
 - `a?b` - Opcionalmente 'a' seguida de 'b'
 - `a\.b` - Literal 'a.b' (el punto está escapado)
 
+### Notas Importantes
+
+- **Hosts permitidos**: El backend acepta peticiones desde `localhost`, `127.0.0.1` y dominios `.vercel.app`
+- **URL del endpoint**: Asegúrate de usar la URL completa con la barra final: `/api/regex-to-dfa/`
+- **CORS**: Está habilitado para todos los orígenes, por lo que el frontend puede hacer peticiones sin problemas
+
 ## Running Locally
 
 ```bash
