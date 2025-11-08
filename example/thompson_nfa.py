@@ -71,12 +71,32 @@ def tokenize(regex: str) -> List[str]:
                 raise ValueError("Expresión termina con '\\' sin carácter a escapar.")
             tokens.append("\\" + regex[i+1])
             i += 2
+        elif c == "[":  # Clase de caracteres
+            j = i + 1
+            buf = []
+            if j >= len(regex):
+                raise ValueError("Clase de caracteres sin cierre ']'")
+            # Permitir ']' escapado dentro de la clase: \]
+            while j < len(regex) and regex[j] != "]":
+                if regex[j] == "\\" and j+1 < len(regex):
+                    buf.append(regex[j+1])
+                    j += 2
+                else:
+                    buf.append(regex[j])
+                    j += 1
+            if j >= len(regex) or regex[j] != "]":
+                raise ValueError("Clase de caracteres sin cierre ']'")
+            # Token con prefijo identificable
+            tokens.append("CLASS:" + "".join(buf))
+            i = j + 1
         else:
             tokens.append(c)
             i += 1
     return tokens
 
 def is_literal(tok: str) -> bool:
+    if tok.startswith("CLASS:"):  # Clase de caracteres
+        return True
     if len(tok) == 2 and tok[0] == "\\":  # \*, \|, \(
         return True
     return tok not in {"(", ")", "|", "*", "+", "?", "."}
@@ -141,6 +161,24 @@ def literal_fragment(ids: Ids, symbol: str) -> Fragment:
     st_f = State(f)
     return Fragment(s, {f}, {s: st_s, f: st_f})
 
+def class_fragment(ids: Ids, chars: str) -> Fragment:
+    """
+    Crea un fragmento NFA que acepta cualquier carácter de la clase de caracteres.
+    Implementa [chars] como una unión de literales: (char1|char2|...|charN)
+    """
+    # Clase vacía: nunca acepta
+    if not chars:
+        s = ids.new()
+        f = ids.new()
+        return Fragment(s, set(), {s: State(s), f: State(f)})
+    
+    # Crear fragmentos para cada carácter y unirlos
+    frags = [literal_fragment(ids, ch) for ch in chars]
+    frag = frags[0]
+    for f in frags[1:]:
+        frag = union_frag(frag, f, ids)
+    return frag
+
 def concat_frag(a: Fragment, b: Fragment) -> Fragment:
     for acc in a.accepts:
         a.states[acc].add(EPSILON, b.start)
@@ -191,7 +229,12 @@ def postfix_to_nfa(postfix: List[str]) -> NFA:
     stack: List[Fragment] = []
     for tok in postfix:
         if is_literal(tok):
-            stack.append(literal_fragment(ids, tok))
+            if tok.startswith("CLASS:"):
+                # Extraer los caracteres de la clase (sin el prefijo "CLASS:")
+                chars = tok[len("CLASS:"):]
+                stack.append(class_fragment(ids, chars))
+            else:
+                stack.append(literal_fragment(ids, tok))
         elif tok == ".":
             if len(stack) < 2: raise ValueError("Concatenación inválida.")
             b = stack.pop(); a = stack.pop()
@@ -1115,16 +1158,22 @@ if __name__ == "__main__":
         print("Uso:")
         print("  python thompson_nfa.py '<regex>'")
         print("  python thompson_nfa.py --batch=entrada.txt --csv=salida.csv")
+        print("  python thompson_nfa.py --batch=entrada.txt --csv=salida.csv --with-clase")
         sys.exit(0)
 
     # Modo batch (archivo -> csv)
     batch_arg = next((a for a in sys.argv[1:] if a.startswith("--batch=")), None)
     csv_arg   = next((a for a in sys.argv[1:] if a.startswith("--csv=")), None)
+    with_clase = any(a == "--with-clase" for a in sys.argv[1:])
+    
     if batch_arg:
         input_path = batch_arg.split("=", 1)[1]
         output_csv = (csv_arg.split("=", 1)[1] if csv_arg else "resultado.csv")
         try:
-            process_regex_file_to_csv(input_path, output_csv)
+            if with_clase:
+                process_regex_file_to_csv_with_clase(input_path, output_csv)
+            else:
+                process_regex_file_to_csv(input_path, output_csv)
             print(f"[OK] CSV generado: {output_csv}")
         except Exception as e:
             print(f"[!] Error en modo batch: {e}")
