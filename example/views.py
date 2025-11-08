@@ -101,8 +101,8 @@ def regex_to_dfa(request):
     Endpoint que convierte una expresión regular a DFA.
     
     Parámetros:
-    - GET: ?regex=<expresion>
-    - POST: {"regex": "<expresion>"} o {"regex": "<expresion>", "test": "<cadena>"}
+    - GET: ?regex=<expresion>&test=cadena1&test=cadena2 o ?regex=<expresion>&tests=cadena1,cadena2
+    - POST: {"regex": "<expresion>"} o {"regex": "<expresion>", "test": "<cadena>"} o {"regex": "<expresion>", "tests": ["cadena1", "cadena2"]}
     
     Retorna JSON con:
     {
@@ -115,9 +115,13 @@ def regex_to_dfa(request):
             "accepting": [...],
             "transitions": [...]
         },
-        "test_result": null o {"string": "...", "accepted": true/false},
+        "test_results": null o [{"string": "...", "accepted": true/false}, ...],
         "error": null o "mensaje de error"
     }
+    
+    Nota: Puede recibir múltiples cadenas para probar:
+    - GET: ?test=cadena1&test=cadena2 o ?tests=cadena1,cadena2
+    - POST: {"test": "cadena"} (una cadena) o {"tests": ["cadena1", "cadena2"]} (múltiples)
     """
     # ========== LOGS DE ENTRADA ==========
     print("=" * 80)
@@ -132,12 +136,20 @@ def regex_to_dfa(request):
     sys.stdout.flush()
     
     regex = None
-    test_string = None
+    test_strings = []  # Lista de cadenas a probar
     
     if request.method == "GET":
         regex = request.GET.get("regex")
-        test_string = request.GET.get("test")
-        print(f"[REGEX_TO_DFA] GET - regex={repr(regex)}, test={repr(test_string)}")
+        # GET puede tener múltiples parámetros "test" o un parámetro "tests" separado por comas
+        test_list = request.GET.getlist("test")  # Obtener todos los parámetros "test"
+        if test_list:
+            test_strings = test_list
+        else:
+            # Intentar obtener "tests" como cadena separada por comas
+            tests_str = request.GET.get("tests")
+            if tests_str:
+                test_strings = [s.strip() for s in tests_str.split(",") if s.strip()]
+        print(f"[REGEX_TO_DFA] GET - regex={repr(regex)}, tests={test_strings}")
         sys.stdout.flush()
     else:  # POST
         try:
@@ -147,8 +159,24 @@ def regex_to_dfa(request):
             
             data = json.loads(body_str)
             regex = data.get("regex")
-            test_string = data.get("test")
-            print(f"[REGEX_TO_DFA] POST - regex={repr(regex)}, test={repr(test_string)}")
+            # POST puede tener "test" (cadena única, para compatibilidad) o "tests" (array)
+            if "tests" in data:
+                # Array de cadenas
+                tests_data = data.get("tests")
+                if isinstance(tests_data, list):
+                    test_strings = [str(s) for s in tests_data]
+                elif isinstance(tests_data, str):
+                    # Si es una cadena, separarla por comas
+                    test_strings = [s.strip() for s in tests_data.split(",") if s.strip()]
+            elif "test" in data:
+                # Cadena única (compatibilidad hacia atrás)
+                test_str = data.get("test")
+                if test_str is not None:
+                    if isinstance(test_str, list):
+                        test_strings = [str(s) for s in test_str]
+                    else:
+                        test_strings = [str(test_str)]
+            print(f"[REGEX_TO_DFA] POST - regex={repr(regex)}, tests={test_strings}")
             sys.stdout.flush()
         except json.JSONDecodeError as e:
             print(f"[REGEX_TO_DFA] ERROR - JSON inválido: {e}")
@@ -202,24 +230,26 @@ def regex_to_dfa(request):
         print(f"[REGEX_TO_DFA] DFA serializado - Alfabeto: {dfa_json['alphabet']}, Estados: {len(dfa_json['states'])}")
         sys.stdout.flush()
         
-        # Si se proporcionó una cadena de prueba, verificar si es aceptada
-        test_result = None
-        if test_string is not None:
-            print(f"[REGEX_TO_DFA] Probando cadena: {repr(test_string)}")
+        # Probar cadenas si se proporcionaron
+        test_results = None
+        if test_strings:
+            print(f"[REGEX_TO_DFA] Probando {len(test_strings)} cadena(s): {test_strings}")
             sys.stdout.flush()
-            accepted = dfa_accepts(dfa, test_string)
-            test_result = {
-                "string": test_string,
-                "accepted": accepted
-            }
-            print(f"[REGEX_TO_DFA] Resultado de prueba: {'ACEPTADA' if accepted else 'RECHAZADA'}")
+            test_results = []
+            for test_str in test_strings:
+                accepted = dfa_accepts(dfa, test_str)
+                test_results.append({
+                    "string": test_str,
+                    "accepted": accepted
+                })
+                print(f"[REGEX_TO_DFA] Cadena '{test_str}': {'ACEPTADA' if accepted else 'RECHAZADA'}")
             sys.stdout.flush()
         
         response_data = {
             "success": True,
             "regex": regex,
             "dfa": dfa_json,
-            "test_result": test_result,
+            "test_results": test_results,  # Ahora es una lista o None
             "error": None
         }
         
@@ -238,10 +268,12 @@ def regex_to_dfa(request):
         print(f"[REGEX_TO_DFA] DFA - Estado inicial: {dfa_json['start']}")
         print(f"[REGEX_TO_DFA] DFA - Estados de aceptación: {dfa_json['accepting']}")
         print(f"[REGEX_TO_DFA] DFA - Transiciones: {len(dfa_json['transitions'])} transiciones")
-        if test_result:
-            print(f"[REGEX_TO_DFA] test_result: cadena='{test_result['string']}', accepted={test_result['accepted']}")
+        if test_results:
+            print(f"[REGEX_TO_DFA] test_results: {len(test_results)} resultado(s)")
+            for i, tr in enumerate(test_results):
+                print(f"[REGEX_TO_DFA]   [{i}] cadena='{tr['string']}', accepted={tr['accepted']}")
         else:
-            print(f"[REGEX_TO_DFA] test_result: null")
+            print(f"[REGEX_TO_DFA] test_results: null")
         print(f"[REGEX_TO_DFA] error: {response_data['error']}")
         print("[REGEX_TO_DFA] --- RESPUESTA JSON COMPLETA ---")
         print(response_json_str)
@@ -264,7 +296,7 @@ def regex_to_dfa(request):
             "success": False,
             "regex": regex,
             "dfa": None,
-            "test_result": None,
+            "test_results": None,
             "error": str(e)
         }
         print("[REGEX_TO_DFA] --- RESPUESTA DE ERROR ---")
@@ -292,7 +324,8 @@ def transitions_to_dfa_endpoint(request):
             {"from": "S1", "symbol": "b", "to": "S2"},
             {"from": "S0", "symbol": "b", "to": "S0"}
         ],
-        "test": "ab"                            // (Opcional) Cadena para probar
+        "test": "ab",                           // (Opcional) Cadena única para probar (compatibilidad)
+        "tests": ["ab", "ba", "a"]              // (Opcional) Array de cadenas para probar
     }
     
     Retorna JSON con:
@@ -305,9 +338,11 @@ def transitions_to_dfa_endpoint(request):
             "accepting": [...],
             "transitions": [...]
         },
-        "test_result": null o {"string": "...", "accepted": true/false},
+        "test_results": null o [{"string": "...", "accepted": true/false}, ...],
         "error": null o "mensaje de error"
     }
+    
+    Nota: Puede recibir múltiples cadenas para probar usando "test" (una cadena) o "tests" (array).
     """
     # ========== LOGS DE ENTRADA ==========
     print("=" * 80)
@@ -339,9 +374,27 @@ def transitions_to_dfa_endpoint(request):
         start = data.get("start")
         accepting = data.get("accepting")
         transitions = data.get("transitions")
-        test_string = data.get("test")
         
-        print(f"[TRANSITIONS_TO_DFA] POST - states={states}, start={start}, accepting={accepting}, transitions_count={len(transitions) if transitions else 0}, test={test_string}")
+        # Soporte para múltiples cadenas de prueba
+        test_strings = []  # Lista de cadenas a probar
+        if "tests" in data:
+            # Array de cadenas
+            tests_data = data.get("tests")
+            if isinstance(tests_data, list):
+                test_strings = [str(s) for s in tests_data]
+            elif isinstance(tests_data, str):
+                # Si es una cadena, separarla por comas
+                test_strings = [s.strip() for s in tests_data.split(",") if s.strip()]
+        elif "test" in data:
+            # Cadena única (compatibilidad hacia atrás) o lista
+            test_data = data.get("test")
+            if test_data is not None:
+                if isinstance(test_data, list):
+                    test_strings = [str(s) for s in test_data]
+                else:
+                    test_strings = [str(test_data)]
+        
+        print(f"[TRANSITIONS_TO_DFA] POST - states={states}, start={start}, accepting={accepting}, transitions_count={len(transitions) if transitions else 0}, tests={test_strings}")
         sys.stdout.flush()
     except json.JSONDecodeError as e:
         print(f"[TRANSITIONS_TO_DFA] ERROR - JSON inválido: {e}")
@@ -410,24 +463,26 @@ def transitions_to_dfa_endpoint(request):
         sys.stdout.flush()
         dfa_json = dfa_to_json(dfa)
         
-        # Probar cadena si se proporcionó
-        test_result = None
-        if test_string is not None:
-            print(f"[TRANSITIONS_TO_DFA] Probando cadena: {repr(test_string)}")
+        # Probar cadenas si se proporcionaron
+        test_results = None
+        if test_strings:
+            print(f"[TRANSITIONS_TO_DFA] Probando {len(test_strings)} cadena(s): {test_strings}")
             sys.stdout.flush()
-            accepted = dfa_accepts(dfa, test_string)
-            test_result = {
-                "string": test_string,
-                "accepted": accepted
-            }
-            print(f"[TRANSITIONS_TO_DFA] Resultado de prueba: {'ACEPTADA' if accepted else 'RECHAZADA'}")
+            test_results = []
+            for test_str in test_strings:
+                accepted = dfa_accepts(dfa, test_str)
+                test_results.append({
+                    "string": test_str,
+                    "accepted": accepted
+                })
+                print(f"[TRANSITIONS_TO_DFA] Cadena '{test_str}': {'ACEPTADA' if accepted else 'RECHAZADA'}")
             sys.stdout.flush()
         
         # Construir respuesta exitosa
         response_data = {
             "success": True,
             "dfa": dfa_json,
-            "test_result": test_result,
+            "test_results": test_results,  # Ahora es una lista o None
             "error": None
         }
         
@@ -447,7 +502,7 @@ def transitions_to_dfa_endpoint(request):
         error_response = {
             "success": False,
             "dfa": None,
-            "test_result": None,
+            "test_results": None,
             "error": str(e)
         }
         print("[TRANSITIONS_TO_DFA] --- RESPUESTA DE ERROR ---")
@@ -469,7 +524,7 @@ def transitions_to_dfa_endpoint(request):
         error_response = {
             "success": False,
             "dfa": None,
-            "test_result": None,
+            "test_results": None,
             "error": str(e)
         }
         print("[TRANSITIONS_TO_DFA] --- RESPUESTA DE ERROR ---")

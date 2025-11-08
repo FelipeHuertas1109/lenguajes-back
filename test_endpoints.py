@@ -47,9 +47,10 @@ def test_get_with_test():
     assert response.status_code == 200
     data = response.json()
     assert data["success"] == True
-    assert data["test_result"] is not None
-    assert data["test_result"]["string"] == "aaab"
-    assert data["test_result"]["accepted"] == True
+    assert data["test_results"] is not None
+    assert len(data["test_results"]) == 1
+    assert data["test_results"][0]["string"] == "aaab"
+    assert data["test_results"][0]["accepted"] == True
     print("[OK] PASSED")
 
 def test_post_basic():
@@ -77,7 +78,9 @@ def test_post_with_test():
     assert response.status_code == 200
     data = response.json()
     assert data["success"] == True
-    assert data["test_result"]["accepted"] == True
+    assert data["test_results"] is not None
+    assert len(data["test_results"]) == 1
+    assert data["test_results"][0]["accepted"] == True
     print("[OK] PASSED")
 
 def test_post_complex():
@@ -158,6 +161,46 @@ def test_cors_headers():
     assert "Access-Control-Allow-Origin" in response.headers or response.headers.get("Access-Control-Allow-Origin") == "*"
     print("[OK] PASSED")
 
+def test_multiple_strings_get():
+    """Test 11: GET con múltiples cadenas de prueba usando tests separado por comas"""
+    print_test_header("GET con múltiples tests - regex=a*b&tests=aaab,b,aaa")
+    response = requests.get(
+        f"{BASE_URL}/api/regex-to-dfa/",
+        params={"regex": "a*b", "tests": "aaab,b,aaa"}
+    )
+    print_response(response)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] == True
+    assert data["test_results"] is not None
+    assert len(data["test_results"]) == 3
+    # Verificar resultados específicos
+    results_dict = {r["string"]: r["accepted"] for r in data["test_results"]}
+    assert results_dict["aaab"] == True  # a*b acepta aaab
+    assert results_dict["b"] == True     # a*b acepta b
+    assert results_dict["aaa"] == False  # a*b NO acepta aaa (falta la b)
+    print("[OK] PASSED")
+
+def test_multiple_strings_post():
+    """Test 12: POST con múltiples cadenas de prueba usando tests array"""
+    print_test_header("POST con múltiples tests - regex=a*b&tests=[aaab, b, aaa]")
+    response = requests.post(
+        f"{BASE_URL}/api/regex-to-dfa/",
+        json={"regex": "a*b", "tests": ["aaab", "b", "aaa"]}
+    )
+    print_response(response)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] == True
+    assert data["test_results"] is not None
+    assert len(data["test_results"]) == 3
+    # Verificar resultados específicos
+    results_dict = {r["string"]: r["accepted"] for r in data["test_results"]}
+    assert results_dict["aaab"] == True  # a*b acepta aaab
+    assert results_dict["b"] == True     # a*b acepta b
+    assert results_dict["aaa"] == False  # a*b NO acepta aaa (falta la b)
+    print("[OK] PASSED")
+
 def main():
     print("=" * 80)
     print("PRUEBAS DE ENDPOINTS - API Regex to DFA")
@@ -176,6 +219,8 @@ def main():
         test_error_invalid_regex,
         test_error_invalid_json,
         test_cors_headers,
+        test_multiple_strings_get,
+        test_multiple_strings_post,
     ]
     
     passed = 0
