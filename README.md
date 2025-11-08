@@ -169,11 +169,58 @@ curl -X POST http://localhost:8000/api/regex-to-dfa/ \
 - `a?b` - Opcionalmente 'a' seguida de 'b'
 - `a\.b` - Literal 'a.b' (el punto está escapado)
 
+### Endpoint: Descargar DFA en formato JFLAP
+
+**URL:** `/api/regex-to-dfa/jff/`
+
+**Métodos:** `GET`, `POST`
+
+Este endpoint convierte una expresión regular a DFA y devuelve un archivo `.jff` compatible con JFLAP para visualización y análisis.
+
+#### Uso
+
+**GET Request:**
+```bash
+# Descargar archivo JFF
+curl "http://localhost:8000/api/regex-to-dfa/jff/?regex=a*b" -o dfa.jff
+```
+
+**POST Request:**
+```bash
+# Descargar archivo JFF usando POST
+curl -X POST http://localhost:8000/api/regex-to-dfa/jff/ \
+  -H "Content-Type: application/json" \
+  -d '{"regex": "a*b"}' \
+  -o dfa.jff
+```
+
+**En el navegador:**
+```
+http://localhost:8000/api/regex-to-dfa/jff/?regex=a*b
+```
+El navegador descargará automáticamente el archivo `dfa_a_b.jff`
+
+#### Formato del archivo
+
+El archivo generado es un XML compatible con JFLAP que incluye:
+- Estados del DFA con nombres (S0, S1, S2, ...)
+- Estado inicial marcado
+- Estados de aceptación marcados
+- Todas las transiciones con sus símbolos
+
+#### Nombre del archivo
+
+El nombre del archivo se genera automáticamente desde la expresión regular:
+- Caracteres especiales se reemplazan por guiones bajos
+- Formato: `dfa_<regex_sanitizada>.jff`
+- Ejemplo: `a*b` → `dfa_a_b.jff`
+
 ### Notas Importantes
 
 - **Hosts permitidos**: El backend acepta peticiones desde `localhost`, `127.0.0.1` y dominios `.vercel.app`
 - **URL del endpoint**: Asegúrate de usar la URL completa con la barra final: `/api/regex-to-dfa/`
 - **CORS**: Está habilitado para todos los orígenes, por lo que el frontend puede hacer peticiones sin problemas
+- **Archivos JFF**: Los archivos generados son compatibles con JFLAP y se pueden abrir directamente en la herramienta
 
 ## Running Locally
 

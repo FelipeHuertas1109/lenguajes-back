@@ -292,10 +292,21 @@ def print_dfa(dfa: DFA) -> None:
 def alias_dfa(dfa: DFA) -> Tuple[Dict[FrozenSet[int], str], Dict[str, FrozenSet[int]]]:
     """
     Asigna alias S0, S1, ... a los conjuntos-estado del AFD en un orden estable:
-    incluye todos los estados que aparezcan como origen/destino + start + accepts.
+    - S0 siempre es el estado inicial
+    - Luego los demás estados en orden consistente
     """
     estados = set(dfa.trans.keys()) | set(dfa.accepts) | {dfa.start}
-    orden = sorted(estados, key=lambda s: (len(s), sorted(s)))  # consistente
+    
+    # Separar el estado inicial para asignarlo siempre como S0
+    estados_restantes = estados - {dfa.start}
+    
+    # Ordenar los estados restantes de manera consistente
+    orden_restantes = sorted(estados_restantes, key=lambda s: (len(s), sorted(s)))
+    
+    # Construir el orden completo: estado inicial primero (S0), luego los demás
+    orden = [dfa.start] + orden_restantes
+    
+    # Asignar aliases: S0 al inicial, S1, S2, ... a los demás
     aliases: Dict[FrozenSet[int], str] = {S: f"S{i}" for i, S in enumerate(orden)}
     rev: Dict[str, FrozenSet[int]] = {v: k for k, v in aliases.items()}
     return aliases, rev
@@ -492,9 +503,10 @@ def draw_dfa_networkx(dfa: DFA):
 
 # ------------------------------ Exportar AFD a JFLAP ------------------------------
 
-def export_dfa_jff(dfa: DFA, path: str):
+def dfa_to_jff_string(dfa: DFA) -> str:
     """
-    Exporta el AFD a JFLAP (.jff). Internamente numera estados según el orden de alias.
+    Convierte el AFD a formato JFLAP (.jff) como string.
+    Internamente numera estados según el orden de alias.
     """
     aliases, rev = alias_dfa(dfa)
     # mapa alias -> id numérico jflap
@@ -534,8 +546,15 @@ def export_dfa_jff(dfa: DFA, path: str):
 
     lines.append('  </automaton>')
     lines.append('</structure>')
+    return "\n".join(lines)
+
+def export_dfa_jff(dfa: DFA, path: str):
+    """
+    Exporta el AFD a JFLAP (.jff). Internamente numera estados según el orden de alias.
+    """
+    jff_content = dfa_to_jff_string(dfa)
     with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+        f.write(jff_content)
 
 # ------------------------------ CLI ------------------------------
 
