@@ -294,8 +294,15 @@ def alias_dfa(dfa: DFA) -> Tuple[Dict[FrozenSet[int], str], Dict[str, FrozenSet[
     Asigna alias S0, S1, ... a los conjuntos-estado del AFD en un orden estable:
     - S0 siempre es el estado inicial
     - Luego los demás estados en orden consistente
+    - Incluye TODOS los estados, incluso los que solo aparecen como destino
     """
-    estados = set(dfa.trans.keys()) | set(dfa.accepts) | {dfa.start}
+    # Obtener TODOS los estados del DFA (incluyendo destinos que no están en trans.keys())
+    estados = set(dfa.trans.keys())
+    estados.add(dfa.start)
+    estados.update(dfa.accepts)
+    # Incluir también todos los estados destino de las transiciones
+    for transitions in dfa.trans.values():
+        estados.update(transitions.values())
     
     # Separar el estado inicial para asignarlo siempre como S0
     estados_restantes = estados - {dfa.start}
@@ -509,12 +516,24 @@ def dfa_to_jff_string(dfa: DFA) -> str:
     Internamente numera estados según el orden de alias.
     """
     aliases, rev = alias_dfa(dfa)
-    # mapa alias -> id numérico jflap
-    orden = sorted(rev.keys(), key=lambda a: int(a[1:]))  # S0,S1,...
+    
+    # Obtener TODOS los estados del DFA para asegurar que todos tengan ID
+    all_states = get_dfa_states(dfa)
+    
+    # Crear mapa de alias a ID numérico (0, 1, 2, ...)
+    # Ordenar aliases por número (S0, S1, S2, ...)
+    orden = sorted(rev.keys(), key=lambda a: int(a[1:]) if a[1:].isdigit() else 999)
     idmap = {alias: i for i, alias in enumerate(orden)}
 
-    def st_id(S):  # id numérico desde el conjunto
-        return idmap[aliases[S]]
+    def st_id(S):  # id numérico desde el conjunto de estados
+        if S not in aliases:
+            # Esto no debería pasar, pero por seguridad
+            raise ValueError(f"Estado {S} no tiene alias asignado")
+        alias = aliases[S]
+        if alias not in idmap:
+            raise ValueError(f"Alias {alias} no está en idmap")
+        return idmap[alias]
+    
     def is_accept_alias(a):  # por alias
         return rev[a] in dfa.accepts
 
@@ -524,7 +543,8 @@ def dfa_to_jff_string(dfa: DFA) -> str:
     lines.append('  <type>fa</type>')
     lines.append('  <automaton>')
 
-    # estados
+    # estados: incluir TODOS los estados, no solo los que están en orden
+    # Usar el orden de aliases para mantener consistencia
     for alias in orden:
         S = rev[alias]
         sid = st_id(S)
@@ -535,9 +555,13 @@ def dfa_to_jff_string(dfa: DFA) -> str:
             lines.append('      <final/>')
         lines.append('    </state>')
 
-    # transiciones
+    # transiciones: asegurarse de que todos los estados origen y destino existen
     for src, edges in dfa.trans.items():
+        if src not in aliases:
+            raise ValueError(f"Estado origen {src} no tiene alias")
         for sym, dst in edges.items():
+            if dst not in aliases:
+                raise ValueError(f"Estado destino {dst} no tiene alias")
             lines.append('    <transition>')
             lines.append(f'      <from>{st_id(src)}</from>')
             lines.append(f'      <to>{st_id(dst)}</to>')
