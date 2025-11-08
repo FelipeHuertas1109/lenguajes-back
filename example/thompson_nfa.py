@@ -911,11 +911,22 @@ def process_regex_file_to_csv_with_clase(input_path: str, output_csv: str) -> No
                 print(f"  [REGEX {lineno}] ✓ Cadenas generadas en {test_strings_time:.2f}s - Total: {len(test_strings_dict)} cadenas")
                 sys.stdout.flush()
                 
-                # Convertir el diccionario a JSON string
+                # Convertir el diccionario a JSON string y validar
                 json_start = time.time()
-                row["Clase"] = json.dumps(test_strings_dict, ensure_ascii=False)
+                json_string = json.dumps(test_strings_dict, ensure_ascii=False)
+                # Validar que el JSON sea válido parseándolo de vuelta
+                try:
+                    json.loads(json_string)  # Validar que sea JSON válido
+                    row["Clase"] = json_string
+                except json.JSONDecodeError as json_err:
+                    # Si hay error al validar, registrar en Error y dejar Clase vacía
+                    error_msg = f"Línea {lineno}: Error al generar JSON válido para Clase: {json_err}"
+                    row["Error"] = error_msg
+                    row["Clase"] = ""
+                    print(f"  [REGEX {lineno}] ⚠ ADVERTENCIA: JSON inválido generado - {json_err}")
+                    sys.stdout.flush()
                 json_time = time.time() - json_start
-                print(f"  [REGEX {lineno}] ✓ JSON serializado en {json_time:.3f}s - Tamaño: {len(row['Clase'])} caracteres")
+                print(f"  [REGEX {lineno}] ✓ JSON serializado y validado en {json_time:.3f}s - Tamaño: {len(row['Clase'])} caracteres")
                 sys.stdout.flush()
                 
             except Exception as e:

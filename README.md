@@ -179,13 +179,16 @@ Este endpoint convierte una expresión regular a DFA y devuelve un archivo `.jff
 
 #### Uso
 
-**GET Request:**
+**GET Request con curl:**
 ```bash
 # Descargar archivo JFF
 curl "http://localhost:8000/api/regex-to-dfa/jff/?regex=a*b" -o dfa.jff
+
+# Con expresión regular codificada en URL
+curl "http://localhost:8000/api/regex-to-dfa/jff/?regex=a%2Ab" -o dfa.jff
 ```
 
-**POST Request:**
+**POST Request con curl:**
 ```bash
 # Descargar archivo JFF usando POST
 curl -X POST http://localhost:8000/api/regex-to-dfa/jff/ \
@@ -200,6 +203,262 @@ http://localhost:8000/api/regex-to-dfa/jff/?regex=a*b
 ```
 El navegador descargará automáticamente el archivo `dfa_a_b.jff`
 
+#### Uso desde el Frontend (JavaScript/TypeScript)
+
+**Con fetch y GET:**
+```javascript
+async function downloadJFF(regex) {
+  try {
+    // Codificar la regex para la URL
+    const encodedRegex = encodeURIComponent(regex);
+    const url = `http://localhost:8000/api/regex-to-dfa/jff/?regex=${encodedRegex}`;
+    
+    const response = await fetch(url, {
+      method: 'GET',
+    });
+    
+    if (!response.ok) {
+      // Si hay error, el servidor devuelve JSON
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Error al generar el archivo JFF');
+    }
+    
+    // Obtener el nombre del archivo del header Content-Disposition
+    const contentDisposition = response.headers.get('Content-Disposition');
+    let filename = 'dfa.jff';
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?(.+)"?/);
+      if (filenameMatch) {
+        filename = filenameMatch[1];
+      }
+    }
+    
+    // Convertir la respuesta a blob y descargar
+    const blob = await response.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(downloadUrl);
+    
+    console.log('Archivo JFF descargado:', filename);
+  } catch (error) {
+    console.error('Error al descargar JFF:', error);
+    throw error;
+  }
+}
+
+// Uso:
+downloadJFF('a*b');
+```
+
+**Con fetch y POST:**
+```javascript
+async function downloadJFFPost(regex) {
+  try {
+    const response = await fetch('http://localhost:8000/api/regex-to-dfa/jff/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ regex: regex }),
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Error al generar el archivo JFF');
+    }
+    
+    // Obtener el nombre del archivo
+    const contentDisposition = response.headers.get('Content-Disposition');
+    let filename = 'dfa.jff';
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?(.+)"?/);
+      if (filenameMatch) {
+        filename = filenameMatch[1];
+      }
+    }
+    
+    // Descargar el archivo
+    const blob = await response.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(downloadUrl);
+    
+    console.log('Archivo JFF descargado:', filename);
+  } catch (error) {
+    console.error('Error al descargar JFF:', error);
+    throw error;
+  }
+}
+
+// Uso:
+downloadJFFPost('(a|b)*');
+```
+
+**Con axios (TypeScript):**
+```typescript
+import axios from 'axios';
+
+async function downloadJFFAxios(regex: string): Promise<void> {
+  try {
+    const response = await axios({
+      url: 'http://localhost:8000/api/regex-to-dfa/jff/',
+      method: 'POST',
+      data: { regex },
+      responseType: 'blob', // Importante: especificar blob para archivos
+    });
+    
+    // Obtener el nombre del archivo del header
+    const contentDisposition = response.headers['content-disposition'];
+    let filename = 'dfa.jff';
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?(.+)"?/);
+      if (filenameMatch) {
+        filename = filenameMatch[1];
+      }
+    }
+    
+    // Crear un enlace temporal para descargar
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+    
+    console.log('Archivo JFF descargado:', filename);
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response) {
+      // Si el error es una respuesta JSON del servidor
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const errorData = JSON.parse(reader.result as string);
+          console.error('Error del servidor:', errorData.error);
+        } catch (e) {
+          console.error('Error al procesar respuesta del servidor');
+        }
+      };
+      reader.readAsText(error.response.data);
+    } else {
+      console.error('Error al descargar JFF:', error);
+    }
+    throw error;
+  }
+}
+
+// Uso:
+downloadJFFAxios('a+b');
+```
+
+**Ejemplo con React:**
+```tsx
+import React, { useState } from 'react';
+
+function JFFDownloadButton() {
+  const [regex, setRegex] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleDownload = async () => {
+    if (!regex.trim()) {
+      setError('Por favor ingresa una expresión regular');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const encodedRegex = encodeURIComponent(regex);
+      const response = await fetch(
+        `http://localhost:8000/api/regex-to-dfa/jff/?regex=${encodedRegex}`
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Error al generar el archivo JFF');
+      }
+
+      // Obtener nombre del archivo
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = 'dfa.jff';
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="?(.+)"?/);
+        if (match) filename = match[1];
+      }
+
+      // Descargar
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      <input
+        type="text"
+        value={regex}
+        onChange={(e) => setRegex(e.target.value)}
+        placeholder="Ingresa una expresión regular (ej: a*b)"
+      />
+      <button onClick={handleDownload} disabled={loading}>
+        {loading ? 'Descargando...' : 'Descargar JFF'}
+      </button>
+      {error && <p style={{ color: 'red' }}>{error}</p>}
+    </div>
+  );
+}
+```
+
+#### Respuesta del Servidor
+
+**Éxito (200 OK):**
+- **Content-Type:** `application/xml; charset=utf-8`
+- **Content-Disposition:** `attachment; filename="dfa_<regex>.jff"; filename*=UTF-8''<encoded_filename>`
+- **Content-Length:** Tamaño del archivo en bytes
+- **Body:** Contenido XML del archivo JFF
+
+**Error (400 Bad Request):**
+- **Content-Type:** `application/json`
+- **Body:**
+```json
+{
+  "success": false,
+  "regex": "a*b",
+  "error": "Mensaje de error descriptivo"
+}
+```
+
+#### Manejo de Errores
+
+El endpoint puede retornar errores en los siguientes casos:
+- **Regex faltante:** `"Parámetro 'regex' requerido"`
+- **JSON inválido (POST):** `"JSON inválido en el cuerpo de la petición"`
+- **Regex inválida:** Mensajes de error específicos de la conversión (paréntesis desbalanceados, token inesperado, etc.)
+
 #### Formato del archivo
 
 El archivo generado es un XML compatible con JFLAP que incluye:
@@ -213,7 +472,20 @@ El archivo generado es un XML compatible con JFLAP que incluye:
 El nombre del archivo se genera automáticamente desde la expresión regular:
 - Caracteres especiales se reemplazan por guiones bajos
 - Formato: `dfa_<regex_sanitizada>.jff`
-- Ejemplo: `a*b` → `dfa_a_b.jff`
+- Ejemplos:
+  - `a*b` → `dfa_a_b.jff`
+  - `(a|b)*` → `dfa_a_b__jff`
+  - `a+b` → `dfa_a_b.jff`
+- El nombre del archivo está codificado correctamente para soportar caracteres especiales mediante RFC 5987
+
+#### Notas Importantes para el Frontend
+
+1. **CORS:** El servidor incluye el header `Access-Control-Expose-Headers` para permitir que el frontend acceda a `Content-Disposition`, `Content-Length` y `Content-Type`
+2. **Codificación de URL:** Cuando uses GET, codifica la expresión regular con `encodeURIComponent()`
+3. **Tipo de respuesta:** Para archivos, usa `responseType: 'blob'` en axios o `response.blob()` en fetch
+4. **Nombre del archivo:** Extrae el nombre del header `Content-Disposition` usando una expresión regular
+5. **Errores:** Si la respuesta no es exitosa, el servidor devuelve JSON con el error, no XML
+6. **Compatibilidad:** Los archivos generados son compatibles con JFLAP 7.1 y versiones posteriores
 
 ### Endpoint: Procesar Archivo de Regex a CSV con Columna Clase
 
@@ -308,8 +580,10 @@ El CSV generado contiene las siguientes columnas:
 3. **Estados de aceptación**: Los estados de aceptación del DFA (separados por espacios)
 4. **Estados**: Todos los estados del DFA (separados por espacios)
 5. **Transiciones**: Las transiciones del DFA en formato `Sx --a--> Sy` (separadas por ` | `)
-6. **Clase**: Un diccionario JSON con 100 cadenas de prueba y sus valores booleanos
+6. **Clase**: Un diccionario JSON con 100 cadenas de prueba y sus valores booleanos (validado automáticamente)
 7. **Error**: Mensaje de error si hubo algún problema al procesar la regex (vacío si fue exitoso)
+
+**Importante:** El archivo CSV se guarda con encoding UTF-8 para evitar problemas con caracteres especiales como `[`, `]`, `→`, etc. que pueden aparecer en las transiciones. Asegúrate de leer el archivo con `encoding='utf-8'` en Python.
 
 #### Ejemplo de archivo CSV de salida
 
@@ -346,6 +620,42 @@ Ejemplo de contenido de la columna "Clase":
 - Las cadenas rechazadas incluyen cadenas con símbolos fuera del alfabeto (garantizadas como rechazadas)
 - Todas las cadenas son únicas en el diccionario
 - El diccionario siempre contiene exactamente 100 entradas
+
+**Validación de la columna Clase:**
+
+El JSON en la columna "Clase" es validado automáticamente durante la generación. Si planeas procesar esta columna en Python, asegúrate de parsearla correctamente:
+
+```python
+import csv
+import json
+
+# Leer el CSV con encoding UTF-8
+with open('resultado.csv', 'r', encoding='utf-8') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        regex = row['Regex']
+        clase_str = row['Clase']
+        
+        # Validar y parsear la columna Clase
+        if clase_str and clase_str.strip():
+            try:
+                clase_dict = json.loads(clase_str)
+                # Verificar que sea un diccionario
+                if isinstance(clase_dict, dict):
+                    print(f"Regex: {regex}")
+                    print(f"  Total de cadenas: {len(clase_dict)}")
+                    print(f"  Aceptadas: {sum(1 for v in clase_dict.values() if v)}")
+                    print(f"  Rechazadas: {sum(1 for v in clase_dict.values() if not v)}")
+                else:
+                    print(f"⚠ Advertencia: Clase no es un diccionario para regex: {regex}")
+            except json.JSONDecodeError as e:
+                print(f"✗ Error al parsear JSON en Clase para regex '{regex}': {e}")
+                print(f"  Contenido: {clase_str[:100]}...")
+        else:
+            print(f"⚠ Clase vacía para regex: {regex} (puede haber un error en la columna Error)")
+```
+
+**Nota importante:** El archivo CSV se guarda con encoding UTF-8 para evitar problemas con caracteres especiales como `[`, `]`, `→`, etc. que pueden aparecer en las transiciones. Asegúrate de leer el archivo con `encoding='utf-8'` en Python.
 
 #### Manejo de errores
 

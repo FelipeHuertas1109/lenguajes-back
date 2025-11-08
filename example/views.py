@@ -4,6 +4,7 @@ import json
 import sys
 import os
 import tempfile
+from urllib.parse import quote
 
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.http import require_http_methods
@@ -370,9 +371,17 @@ def regex_to_dfa_jff(request):
         sys.stdout.flush()
         
         # Crear respuesta HTTP con el archivo
-        response = HttpResponse(jff_content, content_type='application/xml')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        # Usar 'application/xml' o 'text/xml' para archivos JFF
+        # JFLAP reconoce ambos tipos MIME
+        response = HttpResponse(jff_content, content_type='application/xml; charset=utf-8')
+        
+        # Codificar el nombre del archivo correctamente para Content-Disposition
+        # Usar formato RFC 5987 para nombres de archivo con caracteres especiales
+        encoded_filename = quote(filename, safe='')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_filename}'
         response['Content-Length'] = jff_size
+        response['Access-Control-Expose-Headers'] = 'Content-Disposition, Content-Length, Content-Type'
+        
         return response
     
     except Exception as e:
