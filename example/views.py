@@ -22,6 +22,7 @@ from example.thompson_nfa import (
     process_regex_file_to_csv_with_clase,
     transitions_to_dfa
 )
+from example.alphabetnet_model import predict_alphabet
 
 
 def index(request):
@@ -806,3 +807,184 @@ def regex_file_to_csv(request):
         sys.stdout.flush()
         
         return JsonResponse(error_response, status=400)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def regex_to_alphabet(request):
+    """
+    Endpoint que predice el alfabeto de una expresión regular usando el modelo AlphabetNet.
+    
+    Parámetros:
+    - GET: ?regex=<expresion>
+    - POST: {"regex": "<expresion>"}
+    
+    Retorna JSON con:
+    {
+        "success": true/false,
+        "regex": "<expresion>",
+        "alphabet": ["A", "B", "C", ...],  // Alfabeto predicho (sigma_hat)
+        "probabilities": {                  // Probabilidades por símbolo
+            "A": 0.95,
+            "B": 0.87,
+            ...
+        },
+        "error": null o "mensaje de error"
+    }
+    """
+    # ========== LOGS DE ENTRADA ==========
+    print("=" * 80)
+    print(f"[REGEX_TO_ALPHABET] Petición recibida - {datetime.now()}")
+    print(f"[REGEX_TO_ALPHABET] Método HTTP: {request.method}")
+    print(f"[REGEX_TO_ALPHABET] IP Cliente: {request.META.get('REMOTE_ADDR', 'Unknown')}")
+    print(f"[REGEX_TO_ALPHABET] User-Agent: {request.META.get('HTTP_USER_AGENT', 'Unknown')}")
+    print(f"[REGEX_TO_ALPHABET] Origin: {request.META.get('HTTP_ORIGIN', 'None')}")
+    print(f"[REGEX_TO_ALPHABET] Referer: {request.META.get('HTTP_REFERER', 'None')}")
+    print(f"[REGEX_TO_ALPHABET] Path: {request.path}")
+    print(f"[REGEX_TO_ALPHABET] Query String: {request.META.get('QUERY_STRING', 'None')}")
+    sys.stdout.flush()
+    
+    regex = None
+    
+    if request.method == "GET":
+        regex = request.GET.get("regex")
+        print(f"[REGEX_TO_ALPHABET] GET - regex={repr(regex)}")
+        sys.stdout.flush()
+    else:  # POST
+        try:
+            body_str = request.body.decode('utf-8') if request.body else '{}'
+            print(f"[REGEX_TO_ALPHABET] POST Body (raw): {body_str[:200]}...")
+            sys.stdout.flush()
+            
+            data = json.loads(body_str)
+            regex = data.get("regex")
+            print(f"[REGEX_TO_ALPHABET] POST - regex={repr(regex)}")
+            sys.stdout.flush()
+        except json.JSONDecodeError as e:
+            print(f"[REGEX_TO_ALPHABET] ERROR - JSON inválido: {e}")
+            sys.stdout.flush()
+            error_response = {
+                "success": False,
+                "error": "JSON inválido en el cuerpo de la petición"
+            }
+            print("[REGEX_TO_ALPHABET] --- RESPUESTA DE ERROR ---")
+            print(json.dumps(error_response, ensure_ascii=False, indent=2))
+            print("[REGEX_TO_ALPHABET] --- FIN RESPUESTA ---")
+            print("=" * 80)
+            sys.stdout.flush()
+            return JsonResponse(error_response, status=400)
+    
+    if not regex:
+        print("[REGEX_TO_ALPHABET] ERROR - Parámetro 'regex' faltante")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "error": "Parámetro 'regex' es requerido"
+        }
+        print("[REGEX_TO_ALPHABET] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[REGEX_TO_ALPHABET] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=400)
+    
+    # Validar que regex sea string
+    regex = str(regex).strip()
+    if not regex:
+        print("[REGEX_TO_ALPHABET] ERROR - Regex vacío")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "error": "El parámetro 'regex' no puede estar vacío"
+        }
+        print("[REGEX_TO_ALPHABET] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[REGEX_TO_ALPHABET] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=400)
+    
+    # ========== PROCESAR REGEX ==========
+    try:
+        print(f"[REGEX_TO_ALPHABET] Procesando regex: {repr(regex)}")
+        sys.stdout.flush()
+        
+        # Predecir alfabeto usando el modelo
+        result = predict_alphabet(regex)
+        
+        alphabet = result['sigma_hat']
+        probabilities = result['p_sigma']
+        
+        print(f"[REGEX_TO_ALPHABET] Alfabeto predicho: {alphabet}")
+        print(f"[REGEX_TO_ALPHABET] Número de símbolos: {len(alphabet)}")
+        sys.stdout.flush()
+        
+        # ========== CONSTRUIR RESPUESTA ==========
+        response = {
+            "success": True,
+            "regex": regex,
+            "alphabet": alphabet,
+            "probabilities": probabilities,
+            "error": None
+        }
+        
+        print("[REGEX_TO_ALPHABET] --- RESPUESTA EXITOSA ---")
+        print(json.dumps(response, ensure_ascii=False, indent=2))
+        print("[REGEX_TO_ALPHABET] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        
+        return JsonResponse(response)
+        
+    except FileNotFoundError as e:
+        print(f"[REGEX_TO_ALPHABET] ERROR - Archivo no encontrado: {e}")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "regex": regex,
+            "alphabet": None,
+            "probabilities": None,
+            "error": f"Error al cargar el modelo: {str(e)}"
+        }
+        print("[REGEX_TO_ALPHABET] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[REGEX_TO_ALPHABET] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=500)
+        
+    except ImportError as e:
+        print(f"[REGEX_TO_ALPHABET] ERROR - Error de importación: {e}")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "regex": regex,
+            "alphabet": None,
+            "probabilities": None,
+            "error": f"Error al importar el modelo: {str(e)}"
+        }
+        print("[REGEX_TO_ALPHABET] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[REGEX_TO_ALPHABET] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=500)
+        
+    except Exception as e:
+        print(f"[REGEX_TO_ALPHABET] ERROR - Excepción inesperada: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "regex": regex,
+            "alphabet": None,
+            "probabilities": None,
+            "error": f"Error al procesar la regex: {str(e)}"
+        }
+        print("[REGEX_TO_ALPHABET] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[REGEX_TO_ALPHABET] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=500)

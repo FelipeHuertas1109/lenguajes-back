@@ -169,6 +169,304 @@ curl -X POST http://localhost:8000/api/regex-to-dfa/ \
 - `a?b` - Opcionalmente 'a' seguida de 'b'
 - `a\.b` - Literal 'a.b' (el punto está escapado)
 
+## API Endpoint: Regex to Alphabet (AlphabetNet)
+
+El proyecto incluye un endpoint que predice el alfabeto de una expresión regular usando el modelo de aprendizaje profundo AlphabetNet. Este modelo utiliza una red neuronal entrenada para predecir qué símbolos del alfabeto están presentes en el lenguaje definido por la expresión regular.
+
+### Endpoint
+
+**URL:** `/api/regex-to-alphabet/`
+
+**Métodos:** `GET`, `POST`
+
+### Uso
+
+#### GET Request
+
+```bash
+# Predecir alfabeto de una expresión regular
+curl "http://localhost:8000/api/regex-to-alphabet/?regex=(AB)*C"
+
+# Con expresión regular codificada en URL
+curl "http://localhost:8000/api/regex-to-alphabet/?regex=%28AB%29%2AC"
+```
+
+#### POST Request
+
+```bash
+# Predecir alfabeto de una expresión regular
+curl -X POST http://localhost:8000/api/regex-to-alphabet/ \
+  -H "Content-Type: application/json" \
+  -d '{"regex": "(AB)*C"}'
+```
+
+### Respuesta
+
+**Éxito (200 OK):**
+```json
+{
+  "success": true,
+  "regex": "(AB)*C",
+  "alphabet": ["A", "B", "C"],
+  "probabilities": {
+    "A": 0.95,
+    "B": 0.87,
+    "C": 0.92,
+    "D": 0.12,
+    "E": 0.08,
+    ...
+  },
+  "error": null
+}
+```
+
+**Error (400 Bad Request):**
+```json
+{
+  "success": false,
+  "error": "Parámetro 'regex' es requerido"
+}
+```
+
+**Error (500 Internal Server Error):**
+```json
+{
+  "success": false,
+  "regex": "(AB)*C",
+  "alphabet": null,
+  "probabilities": null,
+  "error": "Error al cargar el modelo: Archivo no encontrado"
+}
+```
+
+### Características
+
+- **Predicción basada en ML**: Utiliza un modelo de aprendizaje profundo (AlphabetNet) entrenado para predecir el alfabeto
+- **Probabilidades por símbolo**: Devuelve la probabilidad de que cada símbolo pertenezca al alfabeto
+- **Alfabeto predicho**: Lista de símbolos con probabilidad mayor al threshold (por defecto 0.5)
+- **Lazy loading**: El modelo se carga solo cuando se necesita y se cachea en memoria
+- **Manejo de errores**: Respuestas con mensajes descriptivos en caso de error
+
+### Estructura de la Respuesta
+
+- **`success`**: `true` si la predicción fue exitosa, `false` en caso de error
+- **`regex`**: La expresión regular proporcionada
+- **`alphabet`**: Lista ordenada de símbolos predichos (símbolos con probabilidad ≥ threshold)
+- **`probabilities`**: Diccionario con la probabilidad de cada símbolo del alfabeto completo
+- **`error`**: `null` si no hay error, o un mensaje descriptivo en caso contrario
+
+### Uso desde el Frontend (JavaScript/TypeScript)
+
+**Con fetch:**
+```javascript
+async function predictAlphabet(regex) {
+  try {
+    const response = await fetch('http://localhost:8000/api/regex-to-alphabet/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ regex: regex })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Error al predecir el alfabeto');
+    }
+
+    const data = await response.json();
+    console.log('Alfabeto predicho:', data.alphabet);
+    console.log('Probabilidades:', data.probabilities);
+    return data;
+  } catch (error) {
+    console.error('Error:', error);
+    throw error;
+  }
+}
+
+// Ejemplo de uso
+predictAlphabet('(AB)*C');
+```
+
+**Con axios (TypeScript):**
+```typescript
+import axios from 'axios';
+
+interface AlphabetResponse {
+  success: boolean;
+  regex: string;
+  alphabet: string[];
+  probabilities: { [symbol: string]: number };
+  error: string | null;
+}
+
+async function predictAlphabet(regex: string): Promise<AlphabetResponse> {
+  try {
+    const response = await axios.post<AlphabetResponse>(
+      'http://localhost:8000/api/regex-to-alphabet/',
+      { regex }
+    );
+    return response.data;
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response) {
+      throw new Error(error.response.data.error || 'Error al predecir el alfabeto');
+    }
+    throw error;
+  }
+}
+
+// Ejemplo de uso
+predictAlphabet('(AB)*C').then(data => {
+  console.log('Alfabeto:', data.alphabet);
+  console.log('Probabilidades:', data.probabilities);
+});
+```
+
+**Ejemplo con React:**
+```tsx
+import React, { useState } from 'react';
+
+function AlphabetPredictor() {
+  const [regex, setRegex] = useState('');
+  const [result, setResult] = useState<AlphabetResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handlePredict = async () => {
+    if (!regex.trim()) {
+      setError('Por favor ingresa una expresión regular');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch('http://localhost:8000/api/regex-to-alphabet/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ regex: regex })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Error al predecir el alfabeto');
+      }
+
+      const data = await response.json();
+      setResult(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      <input
+        type="text"
+        value={regex}
+        onChange={(e) => setRegex(e.target.value)}
+        placeholder="Ingresa una expresión regular (ej: (AB)*C)"
+      />
+      <button onClick={handlePredict} disabled={loading}>
+        {loading ? 'Prediciendo...' : 'Predecir Alfabeto'}
+      </button>
+      {error && <p style={{ color: 'red' }}>{error}</p>}
+      {result && (
+        <div>
+          <h3>Resultado</h3>
+          <p><strong>Regex:</strong> {result.regex}</p>
+          <p><strong>Alfabeto predicho:</strong> {result.alphabet.join(', ')}</p>
+          <details>
+            <summary>Probabilidades por símbolo</summary>
+            <ul>
+              {Object.entries(result.probabilities)
+                .sort(([, a], [, b]) => b - a)
+                .map(([symbol, prob]) => (
+                  <li key={symbol}>
+                    {symbol}: {(prob * 100).toFixed(2)}%
+                    {result.alphabet.includes(symbol) && ' ✓'}
+                  </li>
+                ))}
+            </ul>
+          </details>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+### Requisitos del Modelo
+
+Para que el endpoint funcione correctamente, se necesitan los siguientes archivos:
+
+1. **Modelo entrenado**: `models/alphabetnet/alphabetnet.pt` ✓ (verificado)
+2. **Hiperparámetros**: `hparams.json` (opcional - se intentará cargar desde el checkpoint si no existe)
+3. **Archivos del modelo**: `model.py` y `train.py` ⚠️ **REQUERIDOS**
+
+#### Ubicación de los Archivos del Modelo
+
+Los archivos `model.py` y `train.py` deben estar en una de estas ubicaciones:
+
+- `models/src/` (recomendado según test_model.py)
+- `models/alphabetnet/`
+- `src/` (en la raíz del proyecto)
+
+**Importante**: Estos archivos son necesarios porque contienen:
+- `model.py`: La clase `AlphabetNet` que define la arquitectura del modelo
+- `train.py`: Las constantes `ALPHABET`, `MAX_PREFIX_LEN` y la función `regex_to_indices`
+
+Si no tienes estos archivos, cópialos desde el proyecto donde se entrenó el modelo originalmente.
+
+#### Verificación de Archivos
+
+Puedes ejecutar el script de verificación para verificar qué archivos faltan:
+
+```bash
+python check_model_files.py
+```
+
+Este script mostrará:
+- ✓ Archivos encontrados
+- ✗ Archivos faltantes
+- Ubicaciones donde se están buscando los archivos
+
+### Thresholds
+
+Por defecto, el modelo usa un threshold de 0.5 para todos los símbolos. Si existe un archivo `thresholds.json` con thresholds personalizados por símbolo, se cargarán automáticamente. El formato esperado es:
+
+```json
+{
+  "per_symbol": {
+    "A": 0.6,
+    "B": 0.7,
+    "C": 0.5,
+    ...
+  }
+}
+```
+
+### Errores Comunes
+
+- **`"Parámetro 'regex' es requerido"`**: Falta el parámetro regex en la petición
+- **`"El parámetro 'regex' no puede estar vacío"`**: El regex proporcionado está vacío
+- **`"Error al cargar el modelo: Archivo no encontrado"`**: No se encontró el archivo del modelo o los hiperparámetros
+- **`"Error al importar el modelo: ..."`**: No se encontraron los archivos `model.py` o `train.py`
+- **`"Error al procesar la regex: ..."`**: Error durante la predicción (puede ser un problema con el formato de la regex o con el modelo)
+
+### Notas Importantes
+
+- El modelo se carga de forma lazy (solo cuando se necesita) y se cachea en memoria para mejorar el rendimiento
+- Las probabilidades son valores entre 0 y 1, donde valores más altos indican mayor confianza de que el símbolo pertenece al alfabeto
+- El alfabeto predicho (`alphabet`) contiene solo los símbolos con probabilidad mayor o igual al threshold
+- El diccionario `probabilities` contiene probabilidades para todos los símbolos del alfabeto completo del modelo
+- El endpoint es compatible con expresiones regulares estándar, pero el modelo fue entrenado con un conjunto específico de patrones
+
 ### Endpoint: Construir DFA desde Transiciones
 
 **URL:** `/api/transitions-to-dfa/`
