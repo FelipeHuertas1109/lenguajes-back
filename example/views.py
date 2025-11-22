@@ -23,6 +23,9 @@ from example.thompson_nfa import (
     transitions_to_dfa
 )
 from example.alphabetnet_model import predict_alphabet
+from example.acepnet_service import get_acepnet_service
+import pandas as pd
+from pathlib import Path
 
 
 def index(request):
@@ -985,6 +988,584 @@ def regex_to_alphabet(request):
         print("[REGEX_TO_ALPHABET] --- RESPUESTA DE ERROR ---")
         print(json.dumps(error_response, ensure_ascii=False, indent=2))
         print("[REGEX_TO_ALPHABET] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=500)
+
+
+# Cache para el DataFrame del CSV
+_csv_cache = None
+_csv_cache_path = None
+
+def _load_csv_cache(csv_path):
+    """Carga y cachea el DataFrame del CSV para evitar leerlo repetidamente"""
+    global _csv_cache, _csv_cache_path
+    
+    # Si el path cambió o no hay cache, recargar
+    if _csv_cache is None or _csv_cache_path != csv_path:
+        print(f"[SEARCH_REGEX] Cargando CSV desde: {csv_path}")
+        sys.stdout.flush()
+        _csv_cache = pd.read_csv(csv_path)
+        _csv_cache_path = csv_path
+        print(f"[SEARCH_REGEX] CSV cargado: {len(_csv_cache)} filas")
+        sys.stdout.flush()
+    
+    return _csv_cache
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def search_regex(request):
+    """
+    Endpoint que busca regex en el dataset de AcepNet (dataset6000.csv).
+    
+    Parámetros:
+    - GET: ?query=<palabra_clave>&limit=<numero> o ?id=<numero>
+    - POST: {"query": "<palabra_clave>", "limit": <numero>} o {"id": <numero>}
+    
+    Retorna JSON con:
+    {
+        "success": true/false,
+        "query": "<palabra_clave>" o null,
+        "id": <numero> o null,
+        "results": [
+            {"id": 0, "regex": "[LCIG]+"},
+            {"id": 1, "regex": "[GDIK]*"},
+            ...
+        ],
+        "total": 10,
+        "limit": 50,
+        "error": null o "mensaje de error"
+    }
+    """
+    # ========== LOGS DE ENTRADA ==========
+    print("=" * 80)
+    print(f"[SEARCH_REGEX] Petición recibida - {datetime.now()}")
+    print(f"[SEARCH_REGEX] Método HTTP: {request.method}")
+    print(f"[SEARCH_REGEX] IP Cliente: {request.META.get('REMOTE_ADDR', 'Unknown')}")
+    print(f"[SEARCH_REGEX] User-Agent: {request.META.get('HTTP_USER_AGENT', 'Unknown')}")
+    print(f"[SEARCH_REGEX] Origin: {request.META.get('HTTP_ORIGIN', 'None')}")
+    print(f"[SEARCH_REGEX] Path: {request.path}")
+    print(f"[SEARCH_REGEX] Query String: {request.META.get('QUERY_STRING', 'None')}")
+    sys.stdout.flush()
+    
+    query = None
+    search_id = None
+    limit = 50  # Límite por defecto
+    
+    if request.method == "GET":
+        query = request.GET.get("query") or request.GET.get("q")
+        id_str = request.GET.get("id")
+        limit_str = request.GET.get("limit")
+        
+        if id_str:
+            try:
+                search_id = int(id_str)
+            except ValueError:
+                pass
+        
+        if limit_str:
+            try:
+                limit = int(limit_str)
+                limit = max(1, min(limit, 1000))  # Entre 1 y 1000
+            except ValueError:
+                pass
+        print(f"[SEARCH_REGEX] GET - query={repr(query)}, id={search_id}, limit={limit}")
+        sys.stdout.flush()
+    else:  # POST
+        try:
+            body_str = request.body.decode('utf-8') if request.body else '{}'
+            print(f"[SEARCH_REGEX] POST Body (raw): {body_str[:200]}...")
+            sys.stdout.flush()
+            
+            data = json.loads(body_str)
+            query = data.get("query") or data.get("q")
+            
+            if "id" in data:
+                try:
+                    search_id = int(data["id"])
+                except (ValueError, TypeError):
+                    pass
+            
+            if "limit" in data:
+                try:
+                    limit = int(data["limit"])
+                    limit = max(1, min(limit, 1000))  # Entre 1 y 1000
+                except ValueError:
+                    pass
+            print(f"[SEARCH_REGEX] POST - query={repr(query)}, id={search_id}, limit={limit}")
+            sys.stdout.flush()
+        except json.JSONDecodeError as e:
+            print(f"[SEARCH_REGEX] ERROR - JSON inválido: {e}")
+            sys.stdout.flush()
+            error_response = {
+                "success": False,
+                "query": None,
+                "id": None,
+                "results": [],
+                "total": 0,
+                "limit": limit,
+                "error": "JSON inválido en el cuerpo de la petición"
+            }
+            print("[SEARCH_REGEX] --- RESPUESTA DE ERROR ---")
+            print(json.dumps(error_response, ensure_ascii=False, indent=2))
+            print("[SEARCH_REGEX] --- FIN RESPUESTA ---")
+            print("=" * 80)
+            sys.stdout.flush()
+            return JsonResponse(error_response, status=400)
+    
+    # Validar que al menos uno de los parámetros esté presente
+    if search_id is None and not query:
+        print("[SEARCH_REGEX] ERROR - Parámetros faltantes")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "query": None,
+            "id": None,
+            "results": [],
+            "total": 0,
+            "limit": limit,
+            "error": "Se requiere al menos uno de: 'query'/'q' o 'id'"
+        }
+        print("[SEARCH_REGEX] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[SEARCH_REGEX] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=400)
+    
+    # Validar query si se proporcionó
+    if query:
+        query = str(query).strip()
+        if not query:
+            query = None  # Si está vacío, ignorarlo
+    
+    # ========== BUSCAR EN CSV ==========
+    try:
+        # Ruta al CSV del dataset
+        csv_path = Path(__file__).parent.parent / "models" / "acepnet" / "dataset6000.csv"
+        
+        if not csv_path.exists():
+            print(f"[SEARCH_REGEX] ERROR - Archivo CSV no encontrado: {csv_path}")
+            sys.stdout.flush()
+            error_response = {
+                "success": False,
+                "query": query,
+                "id": search_id,
+                "results": [],
+                "total": 0,
+                "limit": limit,
+                "error": f"Archivo CSV no encontrado: {csv_path}"
+            }
+            print("[SEARCH_REGEX] --- RESPUESTA DE ERROR ---")
+            print(json.dumps(error_response, ensure_ascii=False, indent=2))
+            print("[SEARCH_REGEX] --- FIN RESPUESTA ---")
+            print("=" * 80)
+            sys.stdout.flush()
+            return JsonResponse(error_response, status=404)
+        
+        # Cargar CSV (con cache)
+        df = _load_csv_cache(str(csv_path))
+        
+        results = []
+        matches = pd.DataFrame()  # DataFrame vacío para casos de búsqueda por texto
+        
+        # Búsqueda por ID (tiene prioridad si está presente)
+        if search_id is not None:
+            print(f"[SEARCH_REGEX] Buscando por ID: {search_id}")
+            sys.stdout.flush()
+            
+            # Validar que el ID esté en el rango válido
+            if search_id < 0 or search_id >= len(df):
+                print(f"[SEARCH_REGEX] ERROR - ID fuera de rango: {search_id} (rango válido: 0-{len(df)-1})")
+                sys.stdout.flush()
+                error_response = {
+                    "success": False,
+                    "query": query,
+                    "id": search_id,
+                    "results": [],
+                    "total": 0,
+                    "limit": limit,
+                    "error": f"ID fuera de rango. Debe estar entre 0 y {len(df)-1}"
+                }
+                print("[SEARCH_REGEX] --- RESPUESTA DE ERROR ---")
+                print(json.dumps(error_response, ensure_ascii=False, indent=2))
+                print("[SEARCH_REGEX] --- FIN RESPUESTA ---")
+                print("=" * 80)
+                sys.stdout.flush()
+                return JsonResponse(error_response, status=400)
+            
+            # Obtener la fila por ID
+            row = df.iloc[search_id]
+            results.append({
+                "id": int(search_id),
+                "regex": str(row['Regex'])
+            })
+            matches = df.iloc[[search_id]]  # DataFrame con una sola fila para consistencia
+            
+            print(f"[SEARCH_REGEX] Regex encontrado por ID: {results[0]['regex']}")
+            sys.stdout.flush()
+        
+        # Búsqueda por texto (si no se buscó por ID o se quiere combinar)
+        elif query:
+            print(f"[SEARCH_REGEX] Buscando regex que contengan: {repr(query)}")
+            sys.stdout.flush()
+            
+            # Buscar regex que contengan la query (case-insensitive)
+            print(f"[SEARCH_REGEX] Buscando en {len(df)} filas...")
+            sys.stdout.flush()
+            mask = df['Regex'].str.contains(query, case=False, na=False)
+            matches = df[mask]
+            
+            print(f"[SEARCH_REGEX] Encontrados {len(matches)} resultados")
+            sys.stdout.flush()
+            
+            # Limitar resultados
+            matches_limited = matches.head(limit)
+            
+            # Construir lista de resultados con id y regex
+            for idx, row in matches_limited.iterrows():
+                # El ID es el índice original del DataFrame (0-5999)
+                results.append({
+                    "id": int(idx),
+                    "regex": str(row['Regex'])
+                })
+        
+        # ========== CONSTRUIR RESPUESTA ==========
+        response_data = {
+            "success": True,
+            "query": query,
+            "id": search_id,
+            "results": results,
+            "total": len(matches),
+            "limit": limit,
+            "error": None
+        }
+        
+        print("[SEARCH_REGEX] --- RESPUESTA EXITOSA ---")
+        if search_id is not None:
+            print(f"[SEARCH_REGEX] Búsqueda por ID: {search_id}")
+        if query:
+            print(f"[SEARCH_REGEX] Query: {query}")
+        print(f"[SEARCH_REGEX] Total encontrados: {len(matches)}")
+        print(f"[SEARCH_REGEX] Resultados devueltos: {len(results)}")
+        print("[SEARCH_REGEX] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        
+        return JsonResponse(response_data, json_dumps_params={"ensure_ascii": False})
+        
+    except Exception as e:
+        import traceback
+        print(f"[SEARCH_REGEX] ERROR - Excepción inesperada: {e}")
+        traceback.print_exc()
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "query": query,
+            "id": search_id,
+            "results": [],
+            "total": 0,
+            "limit": limit,
+            "error": f"Error al buscar en el CSV: {str(e)}"
+        }
+        print("[SEARCH_REGEX] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[SEARCH_REGEX] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def acepnet_predict(request):
+    """
+    Endpoint que usa el modelo AcepNet para predecir si una cadena es aceptada por un AFD.
+    
+    Parámetros:
+    - GET: ?dfa_id=<id>&string=<cadena> o ?dfa_id=<id>&strings=<cadena1,cadena2>
+    - POST: {"dfa_id": <id>, "string": "<cadena>"} o {"dfa_id": <id>, "strings": ["cadena1", "cadena2"]}
+    
+    Retorna JSON con:
+    {
+        "success": true/false,
+        "dfa_id": <numero>,
+        "afd_info": {
+            "regex": "...",
+            "alphabet": "...",
+            "states": "...",
+            "accepting": "..."
+        },
+        "predictions": [
+            {
+                "string": "...",
+                "y1": {
+                    "probability": 0.95,
+                    "predicted": true,
+                    "ground_truth": true,
+                    "correct": true,
+                    "alphabet_mismatch": false
+                },
+                "y2": {
+                    "probability": 0.42,
+                    "predicted": false
+                }
+            },
+            ...
+        ],
+        "error": null o "mensaje de error"
+    }
+    """
+    # ========== LOGS DE ENTRADA ==========
+    print("=" * 80)
+    print(f"[ACEPNET_PREDICT] Petición recibida - {datetime.now()}")
+    print(f"[ACEPNET_PREDICT] Método HTTP: {request.method}")
+    print(f"[ACEPNET_PREDICT] IP Cliente: {request.META.get('REMOTE_ADDR', 'Unknown')}")
+    print(f"[ACEPNET_PREDICT] User-Agent: {request.META.get('HTTP_USER_AGENT', 'Unknown')}")
+    print(f"[ACEPNET_PREDICT] Origin: {request.META.get('HTTP_ORIGIN', 'None')}")
+    print(f"[ACEPNET_PREDICT] Path: {request.path}")
+    print(f"[ACEPNET_PREDICT] Query String: {request.META.get('QUERY_STRING', 'None')}")
+    sys.stdout.flush()
+    
+    dfa_id = None
+    strings = []  # Lista de cadenas a probar
+    
+    if request.method == "GET":
+        dfa_id_str = request.GET.get("dfa_id") or request.GET.get("id")
+        if dfa_id_str:
+            try:
+                dfa_id = int(dfa_id_str)
+            except ValueError:
+                pass
+        
+        # GET puede tener múltiples parámetros "string" o un parámetro "strings" separado por comas
+        string_list = request.GET.getlist("string")  # Obtener todos los parámetros "string"
+        if string_list:
+            strings = string_list
+        else:
+            # Intentar obtener "strings" como cadena separada por comas
+            strings_str = request.GET.get("strings")
+            if strings_str:
+                strings = [s.strip() for s in strings_str.split(",") if s.strip()]
+        
+        print(f"[ACEPNET_PREDICT] GET - dfa_id={dfa_id}, strings={strings}")
+        sys.stdout.flush()
+    else:  # POST
+        try:
+            body_str = request.body.decode('utf-8') if request.body else '{}'
+            print(f"[ACEPNET_PREDICT] POST Body (raw): {body_str[:200]}...")
+            sys.stdout.flush()
+            
+            data = json.loads(body_str)
+            dfa_id_str = data.get("dfa_id") or data.get("id")
+            if dfa_id_str is not None:
+                try:
+                    dfa_id = int(dfa_id_str)
+                except (ValueError, TypeError):
+                    pass
+            
+            # POST puede tener "string" (cadena única) o "strings" (array)
+            if "strings" in data:
+                # Array de cadenas
+                strings_data = data.get("strings")
+                if isinstance(strings_data, list):
+                    strings = [str(s) for s in strings_data]
+                elif isinstance(strings_data, str):
+                    # Si es una cadena, separarla por comas
+                    strings = [s.strip() for s in strings_data.split(",") if s.strip()]
+            elif "string" in data:
+                # Cadena única (compatibilidad hacia atrás)
+                string_data = data.get("string")
+                if string_data is not None:
+                    if isinstance(string_data, list):
+                        strings = [str(s) for s in string_data]
+                    else:
+                        strings = [str(string_data)]
+            
+            print(f"[ACEPNET_PREDICT] POST - dfa_id={dfa_id}, strings={strings}")
+            sys.stdout.flush()
+        except json.JSONDecodeError as e:
+            print(f"[ACEPNET_PREDICT] ERROR - JSON inválido: {e}")
+            sys.stdout.flush()
+            error_response = {
+                "success": False,
+                "dfa_id": None,
+                "afd_info": None,
+                "predictions": [],
+                "error": "JSON inválido en el cuerpo de la petición"
+            }
+            print("[ACEPNET_PREDICT] --- RESPUESTA DE ERROR ---")
+            print(json.dumps(error_response, ensure_ascii=False, indent=2))
+            print("[ACEPNET_PREDICT] --- FIN RESPUESTA ---")
+            print("=" * 80)
+            sys.stdout.flush()
+            return JsonResponse(error_response, status=400)
+    
+    # Validar dfa_id
+    if dfa_id is None:
+        print("[ACEPNET_PREDICT] ERROR - Parámetro 'dfa_id' faltante")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "dfa_id": None,
+            "afd_info": None,
+            "predictions": [],
+            "error": "Parámetro 'dfa_id' o 'id' es requerido"
+        }
+        print("[ACEPNET_PREDICT] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[ACEPNET_PREDICT] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=400)
+    
+    # Validar strings
+    if not strings:
+        print("[ACEPNET_PREDICT] ERROR - Parámetro 'string' o 'strings' faltante")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "dfa_id": dfa_id,
+            "afd_info": None,
+            "predictions": [],
+            "error": "Parámetro 'string' o 'strings' es requerido"
+        }
+        print("[ACEPNET_PREDICT] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[ACEPNET_PREDICT] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=400)
+    
+    # ========== HACER PREDICCIÓN ==========
+    try:
+        print(f"[ACEPNET_PREDICT] Haciendo predicción - DFA ID: {dfa_id}, Cadenas: {strings}")
+        sys.stdout.flush()
+        
+        # Obtener servicio AcepNet (singleton)
+        service = get_acepnet_service()
+        
+        # Obtener información del AFD
+        afd_info = service.get_afd_info(dfa_id)
+        
+        # Hacer predicciones para todas las cadenas
+        predictions = []
+        for string in strings:
+            try:
+                result = service.predict(dfa_id, string)
+                
+                predictions.append({
+                    "string": result['string'],
+                    "y1": {
+                        "probability": result['y1']['probability'],
+                        "predicted": result['y1']['predicted'],
+                        "ground_truth": result['y1']['ground_truth'],
+                        "correct": result['y1']['correct'],
+                        "alphabet_mismatch": result['y1']['alphabet_mismatch']
+                    },
+                    "y2": {
+                        "probability": result['y2']['probability'],
+                        "predicted": result['y2']['predicted']
+                    }
+                })
+                
+                print(f"[ACEPNET_PREDICT] Cadena '{string}': Y1={result['y1']['probability']:.4f} → {'ACEPTA' if result['y1']['predicted'] else 'RECHAZA'} (GT={'ACEPTA' if result['y1']['ground_truth'] else 'RECHAZA'}, Correcto={'SÍ' if result['y1']['correct'] else 'NO'})")
+                sys.stdout.flush()
+            except Exception as e:
+                print(f"[ACEPNET_PREDICT] ERROR al predecir cadena '{string}': {e}")
+                sys.stdout.flush()
+                predictions.append({
+                    "string": string,
+                    "error": str(e)
+                })
+        
+        # ========== CONSTRUIR RESPUESTA ==========
+        response_data = {
+            "success": True,
+            "dfa_id": dfa_id,
+            "afd_info": afd_info,
+            "predictions": predictions,
+            "error": None
+        }
+        
+        print("[ACEPNET_PREDICT] --- RESPUESTA EXITOSA ---")
+        print(f"[ACEPNET_PREDICT] DFA ID: {dfa_id}")
+        print(f"[ACEPNET_PREDICT] Regex: {afd_info['regex']}")
+        print(f"[ACEPNET_PREDICT] Cadenas evaluadas: {len(predictions)}")
+        print("[ACEPNET_PREDICT] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        
+        return JsonResponse(response_data, json_dumps_params={"ensure_ascii": False})
+        
+    except ValueError as e:
+        # Errores de validación (dfa_id fuera de rango, etc.)
+        print(f"[ACEPNET_PREDICT] ERROR - Error de validación: {e}")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "dfa_id": dfa_id,
+            "afd_info": None,
+            "predictions": [],
+            "error": str(e)
+        }
+        print("[ACEPNET_PREDICT] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[ACEPNET_PREDICT] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=400)
+    
+    except FileNotFoundError as e:
+        print(f"[ACEPNET_PREDICT] ERROR - Archivo no encontrado: {e}")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "dfa_id": dfa_id,
+            "afd_info": None,
+            "predictions": [],
+            "error": f"Error al cargar el modelo: {str(e)}"
+        }
+        print("[ACEPNET_PREDICT] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[ACEPNET_PREDICT] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=500)
+    
+    except ImportError as e:
+        print(f"[ACEPNET_PREDICT] ERROR - Error de importación: {e}")
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "dfa_id": dfa_id,
+            "afd_info": None,
+            "predictions": [],
+            "error": f"Error al importar el modelo: {str(e)}"
+        }
+        print("[ACEPNET_PREDICT] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[ACEPNET_PREDICT] --- FIN RESPUESTA ---")
+        print("=" * 80)
+        sys.stdout.flush()
+        return JsonResponse(error_response, status=500)
+    
+    except Exception as e:
+        import traceback
+        print(f"[ACEPNET_PREDICT] ERROR - Excepción inesperada: {e}")
+        traceback.print_exc()
+        sys.stdout.flush()
+        error_response = {
+            "success": False,
+            "dfa_id": dfa_id,
+            "afd_info": None,
+            "predictions": [],
+            "error": f"Error al hacer predicción: {str(e)}"
+        }
+        print("[ACEPNET_PREDICT] --- RESPUESTA DE ERROR ---")
+        print(json.dumps(error_response, ensure_ascii=False, indent=2))
+        print("[ACEPNET_PREDICT] --- FIN RESPUESTA ---")
         print("=" * 80)
         sys.stdout.flush()
         return JsonResponse(error_response, status=500)
