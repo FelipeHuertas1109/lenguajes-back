@@ -1,0 +1,13 @@
+{
+  "vocab_size": 14,
+  "emb_dim": 128,
+  "hidden_dim": 256,
+  "d_state": 128,
+  "max_len": 64,
+  "num_layers": 1,
+  "rnn_type": "GRU",
+  "use_dfa_embedding": false,
+  "dfa_emb_dim": null,
+  "num_dfas": null,
+  "padding_idx": 0
+}
